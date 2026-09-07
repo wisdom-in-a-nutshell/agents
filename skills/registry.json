@@ -406,8 +406,10 @@
     {
       "skill": "agent-browser",
       "origin": "external",
-      "scope": "dormant",
-      "repos": [],
+      "scope": "repo",
+      "repos": [
+        "adi"
+      ],
       "source_path": "skills-source/external/agent-browser",
       "upstream_ref": "vercel-labs/agent-browser:skills/agent-browser@main"
     }
