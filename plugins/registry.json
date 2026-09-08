@@ -39,7 +39,7 @@
     {
       "plugin": "presentations",
       "marketplace": "openai-primary-runtime",
-      "enabled": true,
+      "enabled": false,
       "scope": "global",
       "repos": [],
       "category": "Productivity"
@@ -87,7 +87,7 @@
     {
       "plugin": "google-drive",
       "marketplace": "openai-curated-remote",
-      "enabled": true,
+      "enabled": false,
       "scope": "global",
       "repos": [],
       "category": "Productivity"
