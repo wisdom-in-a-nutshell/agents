@@ -1,61 +1,63 @@
 ---
 name: win-aip-contract-sync
-description: Local-first WIN-to-AIP contract workflow. Use when adding or changing WIN job endpoints, public response DTOs, generated frontend contracts, or AIP frontend code that consumes WIN contracts in aipodcasting.
+description: Maintains contracts for actual aipodcasting frontend consumers of WIN job paths and public response DTOs. Use when wiring or removing a frontend feature, changing a consumed API contract, investigating generated-contract drift, or deciding whether a WIN change needs frontend work. Backend-only provider, model, or schema changes do not require frontend sync.
 ---
 
 # WIN AIP Contract Sync
 
-## Use when
-- A WIN backend job endpoint or public DTO must be available in `../aipodcasting`.
-- AIP frontend code needs generated job paths, job types, or DTO types from WIN.
-- Contract sync, generated AIP types, or `lib/aip/contracts/**` drift is involved.
+## Consumer boundary
 
-## Operating Rules
-- `win` owns contract sources; `aipodcasting/lib/aip/contracts/**` is generated output.
-- Run local sync; do not wait for CI or cloud cross-repo sync.
-- Do not hand-edit generated files under `aipodcasting/lib/aip/contracts/**`.
-- Generated job endpoint IDs are path slugs: strip slashes and replace `/` and `-` with `_`.
-  Example: `/operations/episodes/retry-ingest` becomes `operations_episodes_retry_ingest`.
-  Verify the final key in `aipodcasting/lib/aip/contracts/job-endpoints.ts`.
-- Keep database models internal; expose public DTOs only.
-- Ask only when frontend fields or UX placement cannot be inferred safely.
-- Do not commit or push unless the user explicitly asks or repo-local automation handles it.
+WIN owns the complete backend API. AIP exports only what its application code
+consumes. Before syncing, identify the actual frontend caller or type import;
+entries in generated files and documentation examples are not consumers.
+
+- A backend-only change, such as adding MAI transcription or changing a model's
+  settings, requires no AIP edits, generation, or frontend checks when no frontend
+  feature consumes that contract. Continue the backend task.
+- A new frontend job caller adds its path to
+  `aipodcasting/lib/aip/job-endpoints.json`; removal of the last caller removes it.
+  This list is intentional frontend scope, not a copy of WIN's endpoint registry.
+- A public DTO belongs in WIN's `scripts/contracts/export_public_dto_contracts.py`
+  `PUBLIC_DTOS` only when frontend code imports that generated type. Remove unused
+  exports with their last imports; keep backend response models needed by WIN.
 
 ## Workflow
-1. Inspect repo state:
+
+1. Inspect both repos' `AGENTS.md`, git status, and the concrete caller/import.
+   Preserve unrelated work. See WIN's `docs/references/api-endpoint-implementation.md`
+   and AIP's `docs/references/aip-backend-integration.md` for exact contracts.
+2. Update the owning backend endpoint or public DTO and its real frontend caller.
+   Keep DB models internal and map to public DTOs explicitly. AIP synchronous
+   routes remain thin HTTP proxies; do not add frontend database access.
+3. Update the consumer list or `PUBLIC_DTOS` only as required by those callers.
+   Submit jobs through `submitJobById`/`submitJob`. Do not add handwritten proxy
+   allowlist exceptions, arbitrary raw-path wrappers, or type casts to skip sync.
+4. If a consumed contract changed, run from WIN:
    ```bash
-   git -C /Users/dobby/GitHub/win status -sb
-   git -C /Users/dobby/GitHub/aipodcasting status -sb
-   ```
-   Work around unrelated local changes; do not revert them.
-2. For backend changes in `win`:
-   - For job endpoints, keep `@register_endpoint` metadata and request/result schemas contractable.
-   - For synchronous UI data, define or update a public Pydantic response DTO and set `response_model=...`.
-   - Add frontend-consumed DTOs to `PUBLIC_DTOS` in `scripts/contracts/export_public_dto_contracts.py`.
-   - Map DB/internal models to DTOs explicitly.
-3. Run generated sync from `win`:
-   ```bash
-   cd /Users/dobby/GitHub/win
    scripts/local/sync_aip_contracts.sh
    ```
-   The wrapper exports job contracts, clears stale generated DTO output, writes current DTOs, and formats with AIP's Biome config.
-4. If frontend work is needed in `aipodcasting`:
-   - Import generated types from `lib/aip/contracts/**`.
-   - Submit jobs through the generic AIP job proxy using generated endpoint IDs/paths.
-   - For synchronous reads or writes, add thin Next.js API proxies to WIN; do not add MongoDB access.
-   - Keep feature-local filters, form state, and UI-only types outside generated contracts.
-5. Validate:
-   - Confirm expected generated files exist under `../aipodcasting/lib/aip/contracts/**`.
-   - Run `scripts/local/check_aip_contracts_drift.sh` when you need a non-mutating stale-contract check.
-   - Run focused backend tests for changed WIN contract exporters or handlers.
-   - Run `pnpm type-check` in `../aipodcasting` when frontend TypeScript or contract consumers changed.
-   - Report `git status -sb` for both repos.
+   It validates listed paths against registered POST jobs, generates their path
+   constants and proxy allowlist, and refreshes selected public DTOs. Missing or
+   duplicate paths fail export. It does not copy all backend request/result
+   schemas or generate an unused job-type enum.
+5. Inspect the generated diff. Do not hand-edit `aipodcasting/lib/aip/contracts/**`.
+   Endpoint IDs are path slugs: strip slashes and replace `/` and `-` with `_`.
+   Read the generated ID rather than guessing. Do not invent frontend work when
+   sync produces no relevant change.
+6. Validate the change:
+   - Run focused WIN tests for changed handlers/exporters.
+   - Run `scripts/local/check_aip_contracts_drift.sh` to check generated output
+     without rewriting AIP.
+   - When frontend code or consumed types changed, run AIP `pnpm type-check`,
+     `pnpm lint`, and relevant feature/proxy tests.
+   - Report the consumer affected and verification. Do not claim frontend schema
+     enforcement: the generic submit helper's payload is `unknown`; WIN validates it.
 
-## References
-- `win/AGENTS.md`
-- `win/docs/references/api-endpoint-implementation.md`
-- `win/docs/references/scripts-and-tools-reference.md`
-- `win/scripts/local/sync_aip_contracts.sh`
-- `aipodcasting/AGENTS.md`
-- `aipodcasting/docs/references/aip-backend-integration.md`
-- `aipodcasting/docs/references/aip-integration-patterns.md`
+## Cleanup and delivery
+
+Prune exports from their owning consumer list/generator, then regenerate; deleting
+only generated output leaves the cause in place. Prefer a focused behavioral test
+that prevents recurrence, such as backend-only changes leaving frontend output
+identical or the proxy rejecting an unconsumed path. Keep details in the owning
+repo docs. Use normal repo lifecycle automation for git sync; do not commit or
+push manually unless explicitly requested.

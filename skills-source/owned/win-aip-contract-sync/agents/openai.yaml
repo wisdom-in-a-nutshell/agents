@@ -1,4 +1,4 @@
 interface:
   display_name: "WIN AIP Contract Sync"
-  short_description: "Sync WIN contracts locally into AIP and apply frontend wiring."
-  default_prompt: "Use $win-aip-contract-sync to update WIN-to-AIP contracts locally, apply aipodcasting frontend wiring, and validate generated contract consumers."
+  short_description: "Sync only contracts the AIP frontend actually consumes."
+  default_prompt: "Use $win-aip-contract-sync to identify actual frontend consumers, sync only their WIN contracts, prune unused exports, and validate the affected features."
