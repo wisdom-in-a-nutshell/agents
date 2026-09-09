@@ -215,7 +215,11 @@ Use [Codex Control Plane Ownership](/Users/dobby/GitHub/agents/docs/references/c
   - uses a machine-local lock under `~/.local/state/codex-control-plane/` so overlapping launchd runs do not race
 - [`finalize-codex-thread.py`](/Users/dobby/GitHub/agents/codex/scripts/finalize-codex-thread.py)
   - takes only `--thread-id` as canonical thread identity
-  - uses app-server `thread/read` to derive the thread `cwd`, resolves the repo root, runs optional repo policy at `scripts/hooks/finalize_codex_thread.py`, runs one same-thread finalization turn when the repo emits an instruction, then archives the source thread through `thread/archive`
+  - connects through `codex app-server proxy` to the existing daemon, uses `thread/read` to derive the thread `cwd`, resolves the repo root, runs optional repo policy at `scripts/hooks/finalize_codex_thread.py`, then archives the source thread through `thread/archive`; repo policy owns any finalization model turn
+  - requires the shared daemon even for a dry-run; check it with `codex app-server daemon version`. A missing daemon fails before repo policy runs, without falling back to a private server; the hourly scheduler retries eligible tasks on its next run
+  - the daemon broadcasts `thread/archived` to connected clients, allowing a Desktop SSH connection using that daemon to remove the sidebar entry. The archive/sidebar step makes no model calls and does not edit Codex databases directly
+  - future work: detect disconnected Desktop clients and reconcile missed archive notifications after reconnect. A running daemon does not prove the app is connected, notifications are not replayed, and local Desktop clients using their own stdio server do not receive the daemon's events
+  - one-time stale-sidebar recovery: confirm a task is already archived, then call the app's `set_thread_archived` tool with its host/id and `archived: true`. The app can remove the stale catalog entry while preserving the archive; repeating `thread/archive` on the daemon alone cannot repair an already-archived entry. No unarchive/rearchive cycle or database edits are needed
   - for repos without `scripts/hooks/finalize_codex_thread.py`, finalization is archive-only
 - [`install-finalize-stale-codex-threads-launchagent.sh`](/Users/dobby/GitHub/agents/codex/scripts/install-finalize-stale-codex-threads-launchagent.sh)
   - renders `~/Library/LaunchAgents/com.<user>.codex-thread-finalizer.plist`

@@ -4,10 +4,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import queue
 import subprocess
 import sys
-import threading
 import time
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -106,34 +104,49 @@ def finish(
 
 
 class AppServerClient:
+    """Read and archive through the daemon also used by Desktop SSH clients."""
+
     def __init__(self, timeout_seconds: float) -> None:
         self.timeout_seconds = timeout_seconds
-        self.proc: subprocess.Popen[str] | None = None
-        self.messages: queue.Queue[dict[str, Any]] = queue.Queue()
-        self.stderr_lines: list[str] = []
+        self.connection: Any = None
         self.next_id = 1
 
     def __enter__(self) -> "AppServerClient":
-        self.start()
+        try:
+            self.start()
+        except Exception:
+            self.close()
+            raise
         return self
 
     def __exit__(self, *_exc: object) -> None:
         self.close()
 
     def start(self) -> None:
-        self.proc = subprocess.Popen(
-            ["codex", "app-server"],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,
-        )
-        assert self.proc.stdout is not None
-        assert self.proc.stderr is not None
-        threading.Thread(target=self._read_stdout, args=(self.proc.stdout,), daemon=True).start()
-        threading.Thread(target=self._read_stderr, args=(self.proc.stderr,), daemon=True).start()
+        try:
+            from websockets.sync.client import unix_connect
+        except ImportError as exc:
+            raise AppServerError(
+                "Missing WebSocket dependency; run "
+                "codex/scripts/install-thread-finalizer-deps.sh --apply"
+            ) from exc
 
+        codex_dir = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))).expanduser()
+        socket_path = codex_dir / "app-server-control" / "app-server-control.sock"
+        try:
+            self.connection = unix_connect(
+                str(socket_path),
+                uri="ws://localhost/rpc",
+                compression=None,
+                user_agent_header=None,
+                open_timeout=self.timeout_seconds,
+                close_timeout=2,
+            )
+        except Exception as exc:
+            raise AppServerError(
+                f"Cannot connect to shared app-server at {socket_path}: {exc}; "
+                "check `codex app-server daemon version`"
+            ) from exc
         self.request(
             "initialize",
             {
@@ -147,41 +160,14 @@ class AppServerClient:
         self.notify("initialized", {})
 
     def close(self) -> None:
-        if self.proc is None:
-            return
-        proc = self.proc
-        self.proc = None
-        if proc.poll() is None:
-            proc.terminate()
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=5)
-
-    def _read_stdout(self, stream: Any) -> None:
-        for line in stream:
-            try:
-                payload = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(payload, dict):
-                self.messages.put(payload)
-
-    def _read_stderr(self, stream: Any) -> None:
-        for line in stream:
-            text = line.rstrip("\n")
-            if text:
-                self.stderr_lines.append(text)
-                del self.stderr_lines[:-80]
+        if self.connection is not None:
+            self.connection.close()
+            self.connection = None
 
     def _write(self, message: dict[str, Any]) -> None:
-        if self.proc is None or self.proc.stdin is None:
-            raise AppServerError("app-server is not running")
-        if self.proc.poll() is not None:
-            raise AppServerError(f"app-server exited with code {self.proc.returncode}")
-        self.proc.stdin.write(json.dumps(message, separators=(",", ":")) + "\n")
-        self.proc.stdin.flush()
+        if self.connection is None:
+            raise AppServerError("shared app-server is not connected")
+        self.connection.send(json.dumps(message, separators=(",", ":")))
 
     def notify(self, method: str, params: dict[str, Any]) -> None:
         self._write({"method": method, "params": params})
@@ -199,70 +185,31 @@ class AppServerClient:
         if params is not None:
             message["params"] = params
         self._write(message)
-        return self._read_response(request_id, method=method, timeout_seconds=timeout_seconds or self.timeout_seconds)
-
-    def _next_message(self, *, timeout_seconds: float) -> dict[str, Any]:
-        if self.proc is not None and self.proc.poll() is not None and self.messages.empty():
-            stderr_tail = "\n".join(self.stderr_lines[-20:])
-            raise AppServerError(
-                f"app-server exited with code {self.proc.returncode}"
-                + (f"\nstderr:\n{stderr_tail}" if stderr_tail else "")
-            )
-        try:
-            return self.messages.get(timeout=timeout_seconds)
-        except queue.Empty as exc:
-            stderr_tail = "\n".join(self.stderr_lines[-20:])
-            raise AppServerError(
-                "timed out waiting for app-server message"
-                + (f"\nstderr:\n{stderr_tail}" if stderr_tail else "")
-            ) from exc
-
-    def _read_response(self, request_id: int, *, method: str, timeout_seconds: float) -> dict[str, Any]:
-        deadline = time.monotonic() + timeout_seconds
+        deadline = time.monotonic() + (timeout_seconds or self.timeout_seconds)
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                stderr_tail = "\n".join(self.stderr_lines[-20:])
-                raise AppServerError(
-                    f"timed out waiting for {method} response id={request_id}"
-                    + (f"\nstderr:\n{stderr_tail}" if stderr_tail else "")
-                )
-            payload = self._next_message(timeout_seconds=remaining)
+                raise AppServerError(f"timed out waiting for {method} response id={request_id}")
+            try:
+                payload = json.loads(self.connection.recv(timeout=remaining))
+            except Exception as exc:
+                raise AppServerError(f"shared app-server {method} response failed: {exc}") from exc
+            if not isinstance(payload, dict):
+                raise AppServerError("shared app-server returned a non-object message")
             if "id" in payload and "method" in payload:
-                self._handle_server_request(payload)
+                # This connection only reads and archives; it never owns model work or approvals.
+                self._write({"id": payload["id"], "error": {"code": -32601, "message": "Unsupported server request"}})
                 continue
             if payload.get("id") != request_id:
                 continue
             if "error" in payload:
                 error = payload["error"]
-                message = error.get("message") if isinstance(error, dict) else str(error)
-                raise AppServerError(f"{method} failed: {message}")
+                detail = error.get("message") if isinstance(error, dict) else str(error)
+                raise AppServerError(f"{method} failed: {detail}")
             result = payload.get("result")
             if not isinstance(result, dict):
-                return {}
+                raise AppServerError(f"{method} returned a non-object result")
             return result
-
-    def _handle_server_request(self, msg: dict[str, Any]) -> None:
-        req_id = msg.get("id")
-        method = msg.get("method")
-        if req_id is None:
-            return
-        if method in {
-            "item/commandExecution/requestApproval",
-            "item/fileChange/requestApproval",
-        }:
-            self._write({"id": req_id, "result": {"decision": "acceptForSession"}})
-            return
-        if method == "applyPatchApproval":
-            self._write({"id": req_id, "result": {"decision": "approved_for_session"}})
-            return
-        if method == "execCommandApproval":
-            self._write({"id": req_id, "result": {"decision": "approved_for_session"}})
-            return
-        if isinstance(method, str) and method.startswith("item/") and method.endswith("/requestApproval"):
-            self._write({"id": req_id, "result": {"decision": "decline"}})
-            return
-        self._write({"id": req_id, "result": {}})
 
 
 def thread_read(client: AppServerClient, thread_id: str) -> dict[str, Any]:
