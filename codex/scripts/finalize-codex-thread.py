@@ -224,6 +224,46 @@ def archive_thread(client: AppServerClient, thread_id: str) -> None:
     client.request("thread/archive", {"threadId": thread_id})
 
 
+def active_related_thread(client: AppServerClient, thread: dict[str, Any]) -> str | None:
+    """Archive also closes descendants, so inspect live activity across that family."""
+    root_id = str(thread["id"])
+    if (thread.get("status") or {}).get("type") == "active":
+        return root_id
+    cache = {root_id: thread}
+    cursor: str | None = None
+    seen_cursors: set[str] = set()
+    while True:
+        params: dict[str, Any] = {"limit": 100}
+        if cursor is not None:
+            params["cursor"] = cursor
+        page = client.request("thread/loaded/list", params)
+        for loaded_id in page["data"]:
+            if loaded_id not in cache:
+                cache[loaded_id] = thread_read(client, loaded_id)
+            loaded = cache[loaded_id]
+            if (loaded.get("status") or {}).get("type") != "active":
+                continue
+            current = loaded
+            visited: set[str] = set()
+            while current["id"] not in visited:
+                current_id = current["id"]
+                if current_id == root_id:
+                    return loaded_id
+                visited.add(current_id)
+                parent_id = current.get("parentThreadId")
+                if not parent_id:
+                    break
+                if parent_id not in cache:
+                    cache[parent_id] = thread_read(client, parent_id)
+                current = cache[parent_id]
+        cursor = page.get("nextCursor")
+        if cursor is None:
+            return None
+        if cursor in seen_cursors:
+            raise AppServerError("thread/loaded/list returned a repeated cursor")
+        seen_cursors.add(cursor)
+
+
 def is_nonfatal_archive_error(exc: Exception) -> bool:
     return "no rollout found for thread id" in str(exc)
 
@@ -296,6 +336,7 @@ def finalize_thread(
 ) -> FinalizeResult:
     with client_factory(timeout_seconds) as client:
         thread = thread_read(client, thread_id)
+        active_id = active_related_thread(client, thread) if not dry_run else None
     cwd = thread.get("cwd")
     if not isinstance(cwd, str) or not cwd.strip():
         return FinalizeResult(
@@ -315,6 +356,21 @@ def finalize_thread(
     finalizer_path = Path(repo_root) / REPO_FINALIZER
     finalizer_path_str = str(finalizer_path) if finalizer_path.is_file() else None
 
+    def active_result(finalizer_status: str) -> FinalizeResult:
+        print(f"[finalize-codex-thread] skipping active task family: {active_id}", file=sys.stderr)
+        return FinalizeResult(
+            thread_id=thread_id,
+            cwd=cwd,
+            repo_root=repo_root,
+            finalizer_path=finalizer_path_str,
+            finalizer_status=finalizer_status,
+            finalization_turn_id=None,
+            finalization_turn_status=None,
+            archived=False,
+            skipped_reason="active_thread",
+            error=None,
+        )
+
     if dry_run:
         return FinalizeResult(
             thread_id=thread_id,
@@ -328,6 +384,9 @@ def finalize_thread(
             skipped_reason="dry_run",
             error=None,
         )
+
+    if active_id is not None:
+        return active_result("not_run")
 
     finalizer_status = "not_found"
     if finalizer_path_str:
@@ -359,23 +418,14 @@ def finalize_thread(
                 file=sys.stderr,
             )
 
-    with client_factory(timeout_seconds) as client:
-        try:
+    try:
+        with client_factory(timeout_seconds) as client:
+            active_id = active_related_thread(client, thread_read(client, thread_id))
+            if active_id is not None:
+                return active_result(finalizer_status)
             archive_thread(client, thread_id)
-        except Exception as exc:
-            if is_nonfatal_archive_error(exc):
-                return FinalizeResult(
-                    thread_id=thread_id,
-                    cwd=cwd,
-                    repo_root=repo_root,
-                    finalizer_path=finalizer_path_str,
-                    finalizer_status=finalizer_status,
-                    finalization_turn_id=None,
-                    finalization_turn_status=None,
-                    archived=False,
-                    skipped_reason="archive_unavailable",
-                    error=None,
-                )
+    except Exception as exc:
+        if is_nonfatal_archive_error(exc):
             return FinalizeResult(
                 thread_id=thread_id,
                 cwd=cwd,
@@ -385,9 +435,21 @@ def finalize_thread(
                 finalization_turn_id=None,
                 finalization_turn_status=None,
                 archived=False,
-                skipped_reason="archive_failed",
-                error=str(exc),
+                skipped_reason="archive_unavailable",
+                error=None,
             )
+        return FinalizeResult(
+            thread_id=thread_id,
+            cwd=cwd,
+            repo_root=repo_root,
+            finalizer_path=finalizer_path_str,
+            finalizer_status=finalizer_status,
+            finalization_turn_id=None,
+            finalization_turn_status=None,
+            archived=False,
+            skipped_reason="archive_failed",
+            error=str(exc),
+        )
 
     return FinalizeResult(
         thread_id=thread_id,
@@ -439,7 +501,7 @@ def main() -> int:
             finalization_timeout_seconds=args.finalization_timeout_seconds,
         )
         status = "ok" if result.error is None and (dry_run or result.archived) else "error"
-        if result.error is None and result.skipped_reason == "archive_unavailable":
+        if result.error is None and result.skipped_reason in {"archive_unavailable", "active_thread"}:
             status = "ok"
         exit_code = 0
         if status != "ok":

@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from tests.control_plane.support import (
     REPO_ROOT,
@@ -349,6 +352,91 @@ print(json.dumps({
 
 
 class FinalizeCodexThreadTests(TempDirTestCase):
+    def test_shared_connection_handles_notifications_and_closes(self) -> None:
+        module = load_thread_finalizer_module()
+        connection = Mock()
+        connection.recv.side_effect = [
+            json.dumps({"id": 1, "result": {}}),
+            json.dumps({"method": "thread/archived", "params": {"threadId": "another-task"}}),
+            json.dumps({"id": 2, "result": {"thread": {"id": "target"}}}),
+        ]
+        connect = Mock(return_value=connection)
+        with patch.dict(sys.modules, {"websockets.sync.client": SimpleNamespace(unix_connect=connect)}), patch.dict(
+            os.environ, {"CODEX_HOME": str(self.temp_path)}
+        ), patch.object(module.subprocess, "Popen") as spawn:
+            with module.AppServerClient(2) as client:
+                self.assertEqual(module.thread_read(client, "target"), {"id": "target"})
+        self.assertEqual(connect.call_args.args, (str(self.temp_path / "app-server-control/app-server-control.sock"),))
+        self.assertIsNone(connect.call_args.kwargs["compression"])
+        methods = [json.loads(call.args[0])["method"] for call in connection.send.call_args_list]
+        self.assertEqual(methods, ["initialize", "initialized", "thread/read"])
+        spawn.assert_not_called()
+        connection.close.assert_called_once()
+
+    def test_unavailable_daemon_does_not_spawn_server_or_run_repo_policy(self) -> None:
+        module = load_thread_finalizer_module()
+        connect = Mock(side_effect=FileNotFoundError("socket missing"))
+        with patch.dict(sys.modules, {"websockets.sync.client": SimpleNamespace(unix_connect=connect)}), patch.object(
+            module.subprocess, "Popen"
+        ) as spawn, patch.object(module, "run_repo_finalizer") as finalizer:
+            with self.assertRaisesRegex(module.AppServerError, "Cannot connect to shared app-server"):
+                module.finalize_thread(
+                    thread_id="target", reason="test", dry_run=False,
+                    timeout_seconds=2, finalization_timeout_seconds=2,
+                )
+        spawn.assert_not_called()
+        finalizer.assert_not_called()
+
+    def test_active_task_is_skipped_before_policy(self) -> None:
+        module = load_thread_finalizer_module()
+        factory = FakeAppServerFactory([[{"thread": {
+            "id": "target", "cwd": str(self.temp_path),
+            "status": {"type": "active", "activeFlags": ["waitingOnApproval"]},
+        }}]])
+        with patch.object(module, "run_repo_finalizer") as finalizer:
+            result = module.finalize_thread(
+                thread_id="target", reason="test", dry_run=False,
+                timeout_seconds=2, finalization_timeout_seconds=2, client_factory=factory,
+            )
+        self.assertEqual(result.skipped_reason, "active_thread")
+        self.assertEqual(result.finalizer_status, "not_run")
+        self.assertFalse(result.archived)
+        finalizer.assert_not_called()
+
+    def test_task_resumed_during_finalization_is_not_archived(self) -> None:
+        module = load_thread_finalizer_module()
+        write_executable(self.temp_path / "scripts/hooks/finalize_codex_thread.py", "#!/usr/bin/env python3\n")
+        factory = FakeAppServerFactory([
+            [{"thread": {"id": "target", "cwd": str(self.temp_path), "status": {"type": "idle"}}}, {"data": []}],
+            [{"thread": {"id": "target", "status": {"type": "active"}}}],
+        ])
+        with patch.object(module, "run_repo_finalizer", return_value=(True, None, None)) as finalizer:
+            result = module.finalize_thread(
+                thread_id="target", reason="test", dry_run=False,
+                timeout_seconds=2, finalization_timeout_seconds=2, client_factory=factory,
+            )
+        self.assertEqual(result.skipped_reason, "active_thread")
+        self.assertEqual(result.finalizer_status, "completed")
+        self.assertFalse(result.archived)
+        finalizer.assert_called_once()
+        self.assertEqual([call[0] for call in factory.clients[1].calls], ["thread/read"])
+
+    def test_active_descendant_is_found_across_loaded_pages_and_unloaded_ancestors(self) -> None:
+        module = load_thread_finalizer_module()
+        root = {"id": "root", "status": {"type": "idle"}}
+        def child(thread_id: str, parent_id: str, status: str) -> dict[str, Any]:
+            return {"id": thread_id, "status": {"type": status},
+                    "parentThreadId": parent_id, "source": "unknown"}
+        client = FakeAppServerClient([
+            {"data": ["unrelated"], "nextCursor": "next"},
+            {"thread": {"id": "unrelated", "status": {"type": "active"}, "source": "cli"}},
+            {"data": ["grandchild"]},
+            {"thread": child("grandchild", "child", "active")},
+            {"thread": child("child", "root", "notLoaded")},
+        ])
+        self.assertEqual(module.active_related_thread(client, root), "grandchild")
+        self.assertEqual(client.calls[2], ("thread/loaded/list", {"limit": 100, "cursor": "next"}))
+
     def test_thread_finalizer_derives_repo_from_thread_read_and_archives(self) -> None:
         module = load_thread_finalizer_module()
         repo = self.temp_path / "repo"
@@ -373,8 +461,13 @@ print("remember-session ok")
                             "updatedAt": 100,
                         }
                     },
+                    {"data": []},
                 ],
-                [{}],
+                [
+                    {"thread": {"id": "thread-123", "status": {"type": "idle"}}},
+                    {"data": []},
+                    {},
+                ],
             ]
         )
 
@@ -393,10 +486,10 @@ print("remember-session ok")
         self.assertEqual(result.finalizer_status, "completed")
         self.assertIsNone(result.finalization_turn_id)
         self.assertIsNone(result.finalization_turn_status)
-        self.assertEqual([call[0] for call in client_factory.clients[0].calls], ["thread/read"])
+        self.assertEqual([call[0] for call in client_factory.clients[0].calls], ["thread/read", "thread/loaded/list"])
         self.assertEqual(
             [call[0] for call in client_factory.clients[1].calls],
-            ["thread/archive"],
+            ["thread/read", "thread/loaded/list", "thread/archive"],
         )
         payload = json.loads(finalizer_payload.read_text())
         self.assertEqual(
@@ -463,8 +556,13 @@ print("remember-session ok")
                             "updatedAt": 100,
                         }
                     },
+                    {"data": []},
                 ],
-                [module.AppServerError("thread/archive failed: no rollout found for thread id thread-123")],
+                [
+                    {"thread": {"id": "thread-123", "status": {"type": "idle"}}},
+                    {"data": []},
+                    module.AppServerError("thread/archive failed: no rollout found for thread id thread-123"),
+                ],
             ]
         )
 
