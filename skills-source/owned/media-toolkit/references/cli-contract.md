@@ -27,7 +27,7 @@ Use it when an agent needs one command surface for:
   - Optional speaker identification: `--identify-speakers`
     - `--speaker-identification-context` adds caller-provided hints
     - `--force-speaker-identification` reruns existing mappings
-  - Local files are uploaded to R2 `cache/`
+  - Local files are uploaded to S3 `cache/`
   - Returns transcript text plus cached transcript/words/sentences artifact URLs
   - Optional file output: `--output`
 - `segment image`
@@ -63,7 +63,7 @@ Use it when an agent needs one command surface for:
 - Submit commands wait for terminal state by default.
 - `--no-wait` returns the submitted `job_id` without polling.
 - `status --wait` polls until the job reaches a terminal state.
-- Local files are uploaded to R2 before submission and then passed to the API as `media_url`.
+- Local files are uploaded to S3 before submission and then passed to the API as `media_url`.
 - `transcribe` is intentionally opinionated; callers do not choose provider, cache, or diarization behavior.
 - `segment video` accepts optional SAM 3.1 initialization controls:
   - `--anchor-seconds`

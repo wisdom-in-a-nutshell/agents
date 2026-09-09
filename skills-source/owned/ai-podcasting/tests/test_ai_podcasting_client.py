@@ -621,7 +621,7 @@ class SubmitAndIntroDryRunTests(unittest.TestCase):
         json.dumps(
           {
             "show": "TCR",
-            "mainSourceUrl": "https://storage.aipodcast.ing/deliverables/exported-main.mp4",
+            "mainSourceUrl": "https://storage.aipodcast.ing/assets/share/deliverables/exported-main.mp4",
           }
         ),
         encoding="utf-8",
@@ -637,7 +637,7 @@ class SubmitAndIntroDryRunTests(unittest.TestCase):
     self.assertTrue(data["dry_run"])
     self.assertEqual(
       data["request"]["payload"]["files"]["main"]["raw"],
-      "https://storage.aipodcast.ing/deliverables/exported-main.mp4",
+      "https://storage.aipodcast.ing/assets/share/deliverables/exported-main.mp4",
     )
     self.assertEqual(len(data["warnings"]), 1)
     self.assertEqual(data["warnings"][0]["code"], "W_TCR_MAIN_MP4_SOURCE")

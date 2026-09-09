@@ -38,7 +38,7 @@ upgrade changes the installed skill and the server-side grant; it does not requi
 - Episode submission is idempotent. Preserve the JSON envelope's `meta.request_id` after an
   uncertain result and retry with `--request-id <same-id>`. A new request ID means a deliberately
   new episode submission.
-- Local files use purpose-based R2 `cache/` upload intents. These URLs are transport references,
+- Local files use purpose-based S3 `cache/` upload intents. These URLs are transport references,
   not permanent client-owned storage.
 
 ## Failure Triage

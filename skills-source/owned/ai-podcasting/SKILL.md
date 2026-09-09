@@ -55,7 +55,7 @@ Use `scripts/aip_local_upload_helper.py` only when the user gives a local file p
 field and no source URL is available. For TCR main episode submissions, prefer a Descript web URL
 copied from Descript for the main source when one exists; do not export or upload an MP4 just to
 create a source link. The helper requests a purpose-specific temporary upload intent and returns
-an R2 `cache/` URL for the main CLI to use. Callers cannot choose a raw lifecycle prefix.
+an S3 `cache/` URL for the main CLI to use. Callers cannot choose a raw lifecycle prefix.
 Keep this implicit in chat unless the user asks.
 
 ## Media Source Rule For TCR
