@@ -141,6 +141,11 @@ explicit command. Codex stores incomplete multi-repository transactions under
 can finish pushing repositories already committed before another repository
 failed. Subagent Stop events defer to their parent; the parent Stop follows
 `parentThreadId` recursively and aggregates the complete descendant turn tree.
+The transaction also holds a discovery checkpoint while activity retrieval is
+incomplete. A later retry replays the original boundary turn and subsequent
+activity before finalizing; it cannot treat an empty retry turn as evidence that
+only the primary repository changed. Discovery failures preserve state and
+return bounded retry feedback without Git mutation.
 Repository discovery combines structured file changes, explicit shell registrations,
 and executed-command cwd/literal paths through `hooks/scripts/codex_shell_paths.py`.
 It does not evaluate command text or inspect command output. Git state under the

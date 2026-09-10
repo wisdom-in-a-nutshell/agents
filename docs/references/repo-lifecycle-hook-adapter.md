@@ -107,6 +107,12 @@ All repo lifecycle hooks are Python. Do not add shell compatibility shims.
   the hook returns actionable incomplete-finalization feedback instead of
   publishing only the primary repo. A repeated continuation emits a warning
   rather than starting an unbounded retry loop.
+- The transaction records a discovery timestamp before reading task activity.
+  Recovery includes the boundary turn and all newer parent/subagent activity,
+  even when the latest turn merely retries finalization. This checkpoint is
+  preserved by shell registration and cleared after complete repository
+  discovery is saved. Missing retained history must not become a successful
+  primary-only fallback.
 - It uses attributed paths to identify repositories, then consolidates all
   staged and working-tree changes under deterministic repository locks.
   Concurrent tasks may overlap; staged-tree fingerprints detect same-path as
