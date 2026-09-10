@@ -124,6 +124,7 @@ Use [Codex Control Plane Ownership](/Users/dobby/GitHub/agents/docs/references/c
   - allows concurrent Codex tasks to edit the same repository or file and uses deterministic per-repository locks to serialize only stage/check/commit/push finalization
   - adopts pre-staged work into the consolidated commit instead of dropping or indefinitely orphaning another task's changes
   - preflights every affected repo's `scripts/check-fast.sh` concurrently and reruns checks when the staged Git tree changes during validation, including same-path content edits that do not change the path set
+  - absorbs nonzero formatter/autofix passes into the same bounded restage/recheck loop when each failing repo's own tree changed; unchanged failures stop immediately and unresolved failures after three passes return feedback. A repaired tree must pass before commit or push
   - commits with mutable commit hooks disabled after the explicit fast-check and staged-tree stability gates
   - persists partial commit/push progress so a later continuation can finish all repositories without losing already-created commits
   - detects and pushes existing local commits even when the current turn has no new file changes in its primary repository

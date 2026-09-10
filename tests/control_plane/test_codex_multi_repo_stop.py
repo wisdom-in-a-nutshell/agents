@@ -381,6 +381,10 @@ class CodexMultiRepoStopTests(TempDirTestCase):
         first_file.write_text("first\n", encoding="utf-8")
         second_file.write_text("second\n", encoding="utf-8")
         write_executable(
+            first / "scripts/check-fast.sh",
+            "#!/usr/bin/env bash\nprintf 'formatted\\n' > first.txt\nexit 1\n",
+        )
+        write_executable(
             second / "scripts/check-fast.sh",
             "#!/usr/bin/env bash\nprintf 'second repo failed\\n' >&2\nexit 1\n",
         )
@@ -394,7 +398,7 @@ class CodexMultiRepoStopTests(TempDirTestCase):
                 stop,
                 "collect_codex_turn_changes",
                 return_value=self.changes([first_file, second_file, second / "scripts/check-fast.sh"]),
-            ):
+            ), patch.object(stop, "preflight_repo_check", wraps=stop.preflight_repo_check) as checks:
                 output = stop.process_codex_repositories(
                     str(first),
                     {"session_id": "thread", "hook_event_name": "Stop"},
@@ -403,12 +407,116 @@ class CodexMultiRepoStopTests(TempDirTestCase):
 
         self.assertEqual(output["decision"], "block")
         self.assertIn("second repo failed", output["reason"])
+        self.assertEqual(checks.call_count, 2)  # Do not retry the unchanged failure.
         for repo in (first, second):
             self.assertEqual(
                 run_command(["git", "-C", str(repo), "rev-parse", "HEAD"]).stdout.strip(),
                 before[str(repo)],
             )
         self.assertEqual(set(pending), {str(first.resolve()), str(second.resolve())})
+
+    def test_autofix_failure_is_rechecked_and_published_without_feedback(self) -> None:
+        self.assert_autofix_failure_recovers(stage_fix=False)
+
+    def test_self_staging_autofix_is_rechecked_before_publication(self) -> None:
+        self.assert_autofix_failure_recovers(stage_fix=True)
+
+    def assert_autofix_failure_recovers(self, *, stage_fix: bool) -> None:
+        repo, remote = self.make_published_repo("repo")
+        path = repo / "formatted.txt"
+        path.write_text("unformatted\n", encoding="utf-8")
+        stage_command = "  git add -- formatted.txt\n" if stage_fix else ""
+        write_executable(
+            repo / "scripts/check-fast.sh",
+            "#!/usr/bin/env bash\n"
+            "if [[ $(cat formatted.txt) != formatted ]]; then\n"
+            "  printf 'formatted\\n' > formatted.txt\n"
+            f"{stage_command}"
+            "  printf 'formatter changed files; rerun\\n' >&2\n"
+            "  exit 1\n"
+            "fi\n"
+            "[[ $(git show :formatted.txt) == formatted ]]\n",
+        )
+        with (
+            patch.object(stop, "collect_codex_turn_changes", return_value=self.changes([path])),
+            patch.object(stop, "preflight_repo_check", wraps=stop.preflight_repo_check) as checks,
+        ):
+            output = stop.process_codex_repositories(
+                str(repo), {"session_id": "thread", "hook_event_name": "Stop"}
+            )
+
+        self.assertIsNone(output)
+        self.assertEqual(checks.call_count, 2)
+        self.assertEqual(
+            run_command(["git", "-C", str(remote), "show", "HEAD:formatted.txt"]).stdout,
+            "formatted\n",
+        )
+        self.assertEqual(run_command(["git", "-C", str(repo), "status", "--porcelain"]).stdout, "")
+        self.assertEqual(stop.load_codex_transaction("thread"), {})
+
+    def test_autofix_does_not_hide_remaining_check_failure(self) -> None:
+        first, first_remote = self.make_published_repo("first")
+        second, second_remote = self.make_published_repo("second")
+        (first / "formatted.txt").write_text("unformatted\n", encoding="utf-8")
+        (second / "ready.txt").write_text("ready\n", encoding="utf-8")
+        write_executable(
+            first / "scripts/check-fast.sh",
+            "#!/usr/bin/env bash\nprintf 'formatted\\n' > formatted.txt\n"
+            "printf 'type error still remains\\n' >&2\nexit 1\n",
+        )
+        before = {
+            str(root): run_command(["git", "-C", str(root), "rev-parse", "HEAD"]).stdout
+            for root in (first, first_remote, second, second_remote)
+        }
+        with (
+            patch.object(stop, "collect_codex_turn_changes", return_value=self.changes([
+                first / "formatted.txt", second / "ready.txt",
+            ])),
+            patch.object(stop, "preflight_repo_check", wraps=stop.preflight_repo_check) as checks,
+        ):
+            output = stop.process_codex_repositories(
+                str(first), {"session_id": "thread", "hook_event_name": "Stop"}
+            )
+
+        self.assertEqual(output["decision"], "block")
+        self.assertIn("type error still remains", output["reason"])
+        self.assertEqual(checks.call_count, 4)
+        for root in (first, first_remote, second, second_remote):
+            self.assertEqual(
+                run_command(["git", "-C", str(root), "rev-parse", "HEAD"]).stdout,
+                before[str(root)],
+            )
+        self.assertEqual(
+            run_command(["git", "-C", str(first), "show", ":formatted.txt"]).stdout,
+            "formatted\n",
+        )
+
+    def test_repeated_mutating_failure_stops_at_consolidation_limit(self) -> None:
+        repo, remote = self.make_published_repo("repo")
+        path = repo / "unstable.txt"
+        path.write_text("initial\n", encoding="utf-8")
+        write_executable(
+            repo / "scripts/check-fast.sh",
+            "#!/usr/bin/env bash\nprintf 'another fix\\n' >> unstable.txt\n"
+            "printf 'formatter did not settle\\n' >&2\nexit 1\n",
+        )
+        before = run_command(["git", "-C", str(remote), "rev-parse", "HEAD"]).stdout
+        with (
+            patch.object(stop, "collect_codex_turn_changes", return_value=self.changes([path])),
+            patch.object(stop, "preflight_repo_check", wraps=stop.preflight_repo_check) as checks,
+        ):
+            output = stop.process_codex_repositories(
+                str(repo), {"session_id": "thread", "hook_event_name": "Stop"}
+            )
+
+        self.assertEqual(output["decision"], "block")
+        self.assertIn("formatter did not settle", output["reason"])
+        self.assertIn("automatic restage/recheck passes", output["reason"])
+        self.assertEqual(checks.call_count, stop.MAX_CONSOLIDATION_PASSES)
+        for root in (repo, remote):
+            self.assertEqual(
+                run_command(["git", "-C", str(root), "rev-parse", "HEAD"]).stdout, before
+            )
 
     def test_stale_competitor_transaction_does_not_block_consolidation(self) -> None:
         repo, remote = self.make_published_repo("repo")

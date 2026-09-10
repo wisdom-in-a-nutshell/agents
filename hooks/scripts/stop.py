@@ -1245,30 +1245,21 @@ def process_codex_repositories(
                     cwd=cwd,
                 )
 
-            check_failures: list[str] = []
+            check_failures: dict[str, str] = {}
             with concurrent.futures.ThreadPoolExecutor(
                 max_workers=max(1, min(CODEX_CHECK_WORKERS, len(pending_items) or 1))
             ) as executor:
                 for root, result in executor.map(preflight_repo_check, pending_items):
                     if result is not None and result.returncode != 0:
-                        check_failures.append(
-                            command_failure_reason(
-                                root,
-                                "scripts/check-fast.sh preflight",
-                                ["bash", "scripts/check-fast.sh"],
-                                result,
-                            )
+                        check_failures[root] = command_failure_reason(
+                            root,
+                            "scripts/check-fast.sh preflight",
+                            ["bash", "scripts/check-fast.sh"],
+                            result,
                         )
-            if check_failures:
-                save_codex_transaction(thread_id, repositories)
-                return maybe_continue(
-                    payload,
-                    codex_failure_reason("Fast checks failed in one or more repositories.", check_failures),
-                    cwd=cwd,
-                )
 
             restage_failures: list[str] = []
-            changed_during_checks = False
+            changed_during_checks: set[str] = set()
             for item in pending_items:
                 staged, staged_result = staged_paths(item.root)
                 unstaged, unstaged_results = unstaged_paths(item.root)
@@ -1305,7 +1296,7 @@ def process_codex_repositories(
                     )
                     continue
                 if after_tree != pass_trees[item.root]:
-                    changed_during_checks = True
+                    changed_during_checks.add(item.root)
             if restage_failures:
                 save_codex_transaction(thread_id, repositories)
                 return maybe_continue(
@@ -1327,13 +1318,34 @@ def process_codex_repositories(
                     cwd=cwd,
                 )
             save_codex_transaction(thread_id, repositories)
+            # Formatters commonly repair files and exit nonzero to request a
+            # recheck. Restage and retry those changes inside this transaction;
+            # the repaired tree still needs a passing, stable check.
+            if check_failures and (
+                check_failures.keys() - changed_during_checks
+                or pass_index + 1 == MAX_CONSOLIDATION_PASSES
+            ):
+                return maybe_continue(
+                    payload,
+                    codex_failure_reason(
+                        (
+                            f"Fast checks still failed after {MAX_CONSOLIDATION_PASSES} "
+                            "automatic restage/recheck passes."
+                            if pass_index + 1 == MAX_CONSOLIDATION_PASSES
+                            else "Fast checks failed in one or more repositories."
+                        ),
+                        list(check_failures.values()),
+                    ),
+                    cwd=cwd,
+                )
             if not changed_during_checks:
                 stable = True
                 validated_trees = pass_trees
                 break
             log(
                 "codex",
-                f"restage concurrent-edits thread={thread_id} pass={pass_index + 1}",
+                f"restage check-time-edits thread={thread_id} pass={pass_index + 1} "
+                f"retrying_failed_checks={len(check_failures)}",
             )
 
         if not stable:

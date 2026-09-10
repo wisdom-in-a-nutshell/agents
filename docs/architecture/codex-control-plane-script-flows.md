@@ -120,10 +120,12 @@ flowchart TD
     F --> G["lock all affected repositories in sorted order"]
     G --> H["consolidate all staged + working-tree changes"]
     H --> I["run every repo scripts/check-fast.sh in parallel"]
-    I --> J{"new edits arrived during checks?"}
+    I --> V{"check failed without changes or with no retries left?"}
+    V -->|"yes"| L["return aggregate feedback to the source task"]
+    V -->|"no"| J{"files changed during checks?"}
     J -->|"yes"| H
     J -->|"no"| K{"all checks passed?"}
-    K -->|"no"| L["return aggregate feedback to the source task"]
+    K -->|"no"| L
     K -->|"yes"| M["commit consolidated repository state"]
     M --> N["persist committed phases"]
     N --> O["push every local commit"]
@@ -154,7 +156,11 @@ unreferenced sibling repos are not scanned.
 Concurrent Codex tasks may edit the same
 repository or file: the shared working tree is consolidated under the Git lock,
 and edits that arrive during checks are restaged and rechecked up to a bounded
-retry limit instead of being discarded.
+retry limit instead of being discarded. This includes formatters that repair
+files and exit nonzero: the hook retries only if each failing repo's own staged
+tree changed, and requires a fully passing stable tree before committing.
+Unchanged failures and repairs that do not settle within three passes return
+the latest errors to the task; successful automatic repairs remain silent.
 
 The revision notification is deliberately after a successful push and contains
 only the repo root plus final commit SHA. It wakes the shared Mac Mini production

@@ -121,6 +121,14 @@ All repo lifecycle hooks are Python. Do not add shell compatibility shims.
   needed. Explicit fast checks and staged-tree stability replace mutable
   commit-hook execution before rebase/push. A successful pull-rebase reruns the
   repo fast check and must leave a clean repository before the push is retried.
+- A repo check may fix files and exit nonzero to request another pass. Codex
+  restages those changes and retries within the existing three-pass
+  consolidation loop without returning formatter-only errors to the task.
+  Each failing repo must change its own staged tree to qualify for a retry;
+  another repo's edits cannot mask an unchanged failure. Every repo must pass
+  on a stable tree before any commit. Persistent failures or repairs that do
+  not settle within three passes return the latest check errors with edits
+  preserved. No formatter-specific output parsing or relaxed checks are used.
 - Subagent Stop events do not finalize independently; their parent Stop owns the
   full turn tree. Copilot, Claude, and Antigravity keep the current-repository
   adapter behavior.
