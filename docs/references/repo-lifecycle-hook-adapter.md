@@ -95,6 +95,13 @@ All repo lifecycle hooks are Python. Do not add shell compatibility shims.
 - For Codex, it reads exact `fileChange` paths from the parent and recursively
   discovered descendant subagent turns, finalizes every affected repository as one persisted
   transaction, and routes aggregate failures back to the source task.
+- Executed shell commands also contribute their cwd and literal filesystem paths
+  as repository candidates. This covers inline Python, generators, formatters,
+  and commands that partially write before failing, without per-repo adapters.
+  Candidates are repository-use evidence, not attribution of every file write:
+  even a read command can select a repo with pending changes. Unreferenced dirty
+  siblings are untouched; clean candidates are skipped. Computed paths absent
+  from command text/cwd still need explicit transaction registration.
 - It uses attributed paths to identify repositories, then consolidates all
   staged and working-tree changes under deterministic repository locks.
   Concurrent tasks may overlap; staged-tree fingerprints detect same-path as

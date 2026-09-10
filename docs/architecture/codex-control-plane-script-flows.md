@@ -141,6 +141,11 @@ explicit command. Codex stores incomplete multi-repository transactions under
 can finish pushing repositories already committed before another repository
 failed. Subagent Stop events defer to their parent; the parent Stop follows
 `parentThreadId` recursively and aggregates the complete descendant turn tree.
+Repository discovery combines structured file changes, explicit shell registrations,
+and executed-command cwd/literal paths through `hooks/scripts/codex_shell_paths.py`.
+It does not evaluate command text or inspect command output. Git state under the
+existing repository locks remains the authority for what gets consolidated;
+unreferenced sibling repos are not scanned.
 Concurrent Codex tasks may edit the same
 repository or file: the shared working tree is consolidated under the Git lock,
 and edits that arrive during checks are restaged and rechecked up to a bounded

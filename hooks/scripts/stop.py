@@ -21,11 +21,16 @@ from typing import Any, Iterable, Iterator
 
 try:
     from hooks.scripts.codex_turn_changes import (
+        CodexShellDiscoveryError,
         CodexTurnChangesError,
         collect_codex_turn_changes,
     )
 except ModuleNotFoundError:  # Direct script execution adds this directory to sys.path.
-    from codex_turn_changes import CodexTurnChangesError, collect_codex_turn_changes
+    from codex_turn_changes import (
+        CodexShellDiscoveryError,
+        CodexTurnChangesError,
+        collect_codex_turn_changes,
+    )
 
 
 VALID_RUNTIMES = {"antigravity", "claude", "codex", "copilot"}
@@ -682,6 +687,22 @@ def repositories_from_paths(paths: tuple[str, ...]) -> dict[str, RepoFinalizatio
     return repositories
 
 
+def repositories_from_shell_paths(paths: tuple[str, ...]) -> dict[str, RepoFinalization]:
+    """Discover used worktrees, including bare cwd/root paths from shell commands."""
+    repositories: dict[str, RepoFinalization] = {}
+    for path_text in paths:
+        path = Path(path_text)
+        if not path.is_absolute():
+            continue
+        ancestor = existing_ancestor(path)
+        if ancestor is None:
+            continue
+        root = filesystem_repo_root(ancestor)
+        if root is not None:
+            repositories.setdefault(str(root), RepoFinalization(root=str(root)))
+    return repositories
+
+
 def merge_codex_transactions(
     pending: dict[str, RepoFinalization],
     discovered: dict[str, RepoFinalization],
@@ -966,6 +987,12 @@ def process_codex_repositories(
     try:
         pending = load_codex_transaction(thread_id)
         changes = collect_codex_turn_changes(thread_id)
+    except CodexShellDiscoveryError as exc:
+        return maybe_continue(
+            payload,
+            state_failure_reason(cwd, f"shell repository discovery is incomplete: {exc}"),
+            cwd=cwd,
+        )
     except (CodexTurnChangesError, RuntimeError) as exc:
         log("codex", f"turn-attribution-failed thread={thread_id} error={exc}")
         if "pending" in locals() and pending:
@@ -996,6 +1023,10 @@ def process_codex_repositories(
     repositories = merge_codex_transactions(
         pending,
         repositories_from_paths(changes.touched_paths),
+    )
+    repositories = merge_codex_transactions(
+        repositories,
+        repositories_from_shell_paths(getattr(changes, "shell_paths", ())),
     )
     primary_root = repo_root(cwd)
     if primary_root:

@@ -6,8 +6,10 @@ from dataclasses import dataclass
 from typing import Any
 
 try:
+    from hooks.scripts.codex_shell_paths import MAX_SHELL_PATHS, command_repository_paths
     from hooks.scripts.stop_feedback_turn import AppServerClient, FeedbackTurnError
 except ModuleNotFoundError:  # Direct script execution adds this directory to sys.path.
+    from codex_shell_paths import MAX_SHELL_PATHS, command_repository_paths
     from stop_feedback_turn import AppServerClient, FeedbackTurnError
 
 
@@ -18,6 +20,10 @@ MAX_DESCENDANT_THREAD_READS = 48
 
 class CodexTurnChangesError(RuntimeError):
     """Raised when Codex turn attribution cannot be read safely."""
+
+
+class CodexShellDiscoveryError(CodexTurnChangesError):
+    """Shell discovery was incomplete and must not silently skip repositories."""
 
 
 @dataclass(frozen=True)
@@ -31,6 +37,7 @@ class CodexTurnChanges:
     turn_id: str
     turn_started_at: int
     touched_paths: tuple[str, ...]
+    shell_paths: tuple[str, ...] = ()
 
 
 def collect_codex_turn_changes(
@@ -38,7 +45,7 @@ def collect_codex_turn_changes(
     *,
     timeout_seconds: float = 8.0,
 ) -> CodexTurnChanges:
-    """Return file changes from the latest parent turn and its subagent tree."""
+    """Return file changes and shell-used paths for the current turn tree."""
     normalized_thread_id = str(thread_id or "").strip()
     if not normalized_thread_id:
         raise CodexTurnChangesError("Codex Stop payload is missing session_id.")
@@ -50,6 +57,7 @@ def collect_codex_turn_changes(
             owner_session_id = _text(owner.get("sessionId")) or normalized_thread_id
             turn_started_at = _integer(owner_turn.get("startedAt"))
             touched_paths = set(_file_change_paths(owner_turn))
+            shell_paths = command_repository_paths(owner_turn)
 
             listed_threads = _list_threads(
                 client,
@@ -98,6 +106,13 @@ def collect_codex_turn_changes(
                 touched_paths.update(
                     _file_change_paths_since(child, started_at=turn_started_at)
                 )
+                for turn in child.get("turns") or []:
+                    if isinstance(turn, dict) and _integer(turn.get("startedAt")) >= turn_started_at:
+                        shell_paths.update(command_repository_paths(turn))
+                if len(shell_paths) > MAX_SHELL_PATHS:
+                    raise ValueError("Codex shell repository discovery exceeded turn-tree path limits.")
+    except ValueError as exc:
+        raise CodexShellDiscoveryError(str(exc)) from exc
     except FeedbackTurnError as exc:
         raise CodexTurnChangesError(str(exc)) from exc
 
@@ -115,6 +130,7 @@ def collect_codex_turn_changes(
         turn_id=_text(owner_turn.get("id")),
         turn_started_at=turn_started_at,
         touched_paths=tuple(sorted(touched_paths)),
+        shell_paths=tuple(sorted(shell_paths)),
     )
 
 
@@ -240,6 +256,7 @@ def _thread_activity_at(thread: dict[str, Any]) -> int:
 
 
 __all__ = [
+    "CodexShellDiscoveryError",
     "CodexTurnChanges",
     "CodexTurnChangesError",
     "collect_codex_turn_changes",

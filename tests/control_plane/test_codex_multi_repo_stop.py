@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from hooks.scripts import codex_turn_changes
+from hooks.scripts.codex_shell_paths import command_repository_paths
 from hooks.scripts import stop
 from tests.control_plane.support import (
     REPO_ROOT,
@@ -205,6 +206,75 @@ class CodexMultiRepoStopTests(TempDirTestCase):
             parent_thread_id="",
             descendant_thread_ids=(),
         )
+
+    def test_shell_python_edit_publishes_sibling_but_not_unreferenced_repo(self) -> None:
+        first, first_remote = self.make_published_repo("backend")
+        second, second_remote = self.make_published_repo("frontend with spaces")
+        untouched, _ = self.make_published_repo("unreferenced")
+        clean, _ = self.make_published_repo("clean")
+        (first / "backend.txt").write_text("backend\n", encoding="utf-8")
+        (untouched / "unrelated.txt").write_text("unrelated\n", encoding="utf-8")
+        script = (
+            "from pathlib import Path; "
+            f"root = Path({str(second)!r}); "
+            "(root / 'frontend.txt').write_text('frontend\\n'); "
+            "raise SystemExit(1)"
+        )
+        result = subprocess.run([sys.executable, "-c", script], cwd=first, check=False)
+        self.assertEqual(result.returncode, 1)
+        changes = self.changes([])
+        changes.shell_paths = tuple(command_repository_paths({"items": [
+            {"type": "commandExecution", "cwd": str(first),
+             "command": f"python - <<'PY'\n{script}\nPY", "status": "completed", "exitCode": 1},
+            {"type": "commandExecution", "cwd": str(clean),
+             "command": "git status --short", "status": "completed", "exitCode": 0},
+        ]}))
+        notified = []
+        with patch.dict(os.environ, {"HOME": str(self.temp_path / "home")}):
+            with patch.object(stop, "collect_codex_turn_changes", return_value=changes), patch.object(
+                stop, "notify_local_production", side_effect=lambda runtime, root, sha: notified.append(root)
+            ):
+                output = stop.process_codex_repositories(
+                    str(first), {"session_id": "thread", "hook_event_name": "Stop"}
+                )
+        self.assertIsNone(output)
+        for repo, remote, name in ((first, first_remote, "backend"), (second, second_remote, "frontend")):
+            self.assertEqual(run_command(["git", "-C", str(repo), "status", "--porcelain"]).stdout, "")
+            self.assertEqual(run_command(["git", "-C", str(remote), "show", f"HEAD:{name}.txt"]).stdout, name + "\n")
+        self.assertEqual(set(notified), {str(first.resolve()), str(second.resolve())})
+        self.assertIn("unrelated.txt", run_command(["git", "-C", str(untouched), "status", "--porcelain"]).stdout)
+
+    def test_shell_cwd_failure_preflights_all_repos_before_any_commit(self) -> None:
+        first, _ = self.make_published_repo("first")
+        second, _ = self.make_published_repo("second")
+        (first / "first.txt").write_text("first\n", encoding="utf-8")
+        write_executable(second / "scripts/check-fast.sh", "#!/bin/sh\necho shell-repo-check-failed >&2\nexit 1\n")
+        before = {str(repo): run_command(["git", "-C", str(repo), "rev-parse", "HEAD"]).stdout for repo in (first, second)}
+        changes = self.changes([])
+        changes.shell_paths = (str(second),)
+        with patch.dict(os.environ, {"HOME": str(self.temp_path / "home")}):
+            with patch.object(stop, "collect_codex_turn_changes", return_value=changes):
+                output = stop.process_codex_repositories(
+                    str(first), {"session_id": "thread", "hook_event_name": "Stop"}
+                )
+            pending = stop.load_codex_transaction("thread")
+        self.assertEqual(output["decision"], "block")
+        self.assertIn("shell-repo-check-failed", output["reason"])
+        self.assertEqual(set(pending), {str(first.resolve()), str(second.resolve())})
+        for repo in (first, second):
+            self.assertEqual(run_command(["git", "-C", str(repo), "rev-parse", "HEAD"]).stdout, before[str(repo)])
+
+    def test_shell_discovery_limit_does_not_silently_finalize_primary_only(self) -> None:
+        first, _ = self.make_published_repo("first")
+        (first / "first.txt").write_text("first\n", encoding="utf-8")
+        with patch.dict(os.environ, {"HOME": str(self.temp_path / "home")}):
+            with patch.object(stop, "collect_codex_turn_changes", side_effect=codex_turn_changes.CodexShellDiscoveryError("limit")):
+                output = stop.process_codex_repositories(
+                    str(first), {"session_id": "thread", "hook_event_name": "Stop"}
+                )
+        self.assertEqual(output["decision"], "block")
+        self.assertIn("shell repository discovery is incomplete", output["reason"])
+        self.assertIn("first.txt", run_command(["git", "-C", str(first), "status", "--porcelain"]).stdout)
 
     def test_commits_and_pushes_two_attributed_repositories(self) -> None:
         first, first_remote = self.make_published_repo("first")

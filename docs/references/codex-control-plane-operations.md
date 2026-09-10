@@ -113,6 +113,10 @@ Use [Codex Control Plane Ownership](/Users/dobby/GitHub/agents/docs/references/c
 - `~/.codex/config.toml` does not use Codex `notify`; global hook automation is rendered into `~/.codex/hooks.json`, and repo-assigned hooks are rendered into managed repo `.codex/hooks.json` from `hooks/registry.json`.
 - The global `Stop` hook owns the managed-repo git conveyor:
   - reads Codex App Server `fileChange` items for the parent turn and recursively follows `parentThreadId` for descendant subagents
+  - also discovers repositories from executed `commandExecution` working directories and literal absolute, `~/`, `./`, or `../` paths in command text, including commands that exited with an error after writing files; shell/Python edits no longer require a `fileChange` event when their repository is visible in command evidence
+  - command use selects a repository for normal consolidation even when that individual command only reads it; clean repositories without local commits are skipped, and dirty siblings absent from the task's command/file evidence are not swept
+  - parses command input as text only: no command evaluation, environment expansion, command-output inspection, or filesystem-wide scanning; dynamically computed paths not visible in any command cwd/literal still require the existing explicit registration helper
+  - shell discovery limits return actionable Stop feedback rather than silently finalizing only the primary repository
   - also adopts exact repo skill-link paths registered by shell-based control-plane syncs through `CODEX_THREAD_ID`, so bootstrap changes that do not surface as App Server `fileChange` items still use the same checked multi-repo finalization path
   - merges descendant-thread registrations into the parent Stop transaction before finalization; subagent Stop events continue to defer to the parent
   - uses those exact absolute paths to identify affected Git worktrees, then consolidates all current staged and working-tree changes inside each affected repository
