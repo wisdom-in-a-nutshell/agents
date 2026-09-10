@@ -60,8 +60,9 @@ the existing artifact cache rather than storing Modal URIs in HTTP URL fields.
 Background uploads still transfer the same bytes: select retained outputs
 explicitly. Native S3 on the Mac is still an outbound destination for Modal.
 Read Modal's `docs/references/media-transfer-policy.md` for dated billing facts
-and WIN's `docs/architecture/media-source-identity-and-storage.md` for the planned
-acquisition migration; do not treat the target as an already-shipped schema.
+and WIN's `docs/architecture/media-source-identity-and-storage.md` for Source
+identity and acquisition contracts. Use the owning repo docs and current
+deployment evidence to determine rollout status.
 
 ## Ownership And Cleanup Rules
 
