@@ -16,7 +16,6 @@ import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any, Iterable, Iterator
 
 try:
@@ -584,9 +583,16 @@ def load_codex_transaction(thread_id: str) -> dict[str, RepoFinalization]:
 def save_codex_transaction(
     thread_id: str,
     repositories: dict[str, RepoFinalization],
+    *,
+    discovery_started_at: int | None = None,
+    clear_discovery: bool = False,
 ) -> None:
     path = codex_transaction_path(thread_id)
-    if not repositories:
+    checkpoint = None if clear_discovery else (
+        discovery_started_at if discovery_started_at is not None
+        else load_codex_discovery_checkpoint(thread_id)
+    )
+    if not repositories and checkpoint is None:
         try:
             path.unlink()
         except FileNotFoundError:
@@ -607,6 +613,8 @@ def save_codex_transaction(
             for item in sorted(repositories.values(), key=lambda value: value.root)
         ],
     }
+    if checkpoint is not None:
+        payload["discovery_started_at"] = checkpoint
     handle = tempfile.NamedTemporaryFile(
         "w",
         encoding="utf-8",
@@ -628,6 +636,22 @@ def save_codex_transaction(
             temp_path.unlink()
         except FileNotFoundError:
             pass
+
+
+def load_codex_discovery_checkpoint(thread_id: str) -> int | None:
+    """Retain the failed discovery boundary across retry/user continuation turns."""
+    try:
+        raw = json.loads(codex_transaction_path(thread_id).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except Exception as exc:
+        raise RuntimeError(f"could not read Codex discovery checkpoint: {exc}") from exc
+    if not isinstance(raw, dict) or raw.get("thread_id") != thread_id:
+        raise RuntimeError("Codex discovery checkpoint has an invalid owner")
+    value = raw.get("discovery_started_at")
+    if value is not None and (type(value) is not int or value <= 0):
+        raise RuntimeError("Codex discovery checkpoint has an invalid timestamp")
+    return value
 
 
 def existing_ancestor(path: Path) -> Path | None:
@@ -981,12 +1005,28 @@ def process_codex_repositories(
     """Finalize exactly the repositories attributed to this Codex turn tree."""
     thread_id = str(payload.get("session_id") or "").strip()
     if not thread_id:
-        log("codex", "fallback single-repo reason=missing-session-id")
-        return process_repo(cwd, payload, runtime="codex")
+        log("codex", "block repository-discovery reason=missing-session-id")
+        return maybe_continue(
+            payload,
+            state_failure_reason(
+                cwd,
+                "repository discovery is incomplete: Codex Stop payload is missing session_id. "
+                "No repositories were finalized. Restore the task identity before retrying.",
+            ),
+            cwd=cwd,
+        )
 
     try:
         pending = load_codex_transaction(thread_id)
-        changes = collect_codex_turn_changes(thread_id)
+        replay_before = load_codex_discovery_checkpoint(thread_id)
+        save_codex_transaction(
+            thread_id, pending,
+            discovery_started_at=replay_before if replay_before is not None else int(time.time()),
+        )
+        changes = (
+            collect_codex_turn_changes(thread_id, replay_before=replay_before)
+            if replay_before is not None else collect_codex_turn_changes(thread_id)
+        )
     except CodexShellDiscoveryError as exc:
         return maybe_continue(
             payload,
@@ -995,24 +1035,24 @@ def process_codex_repositories(
         )
     except (CodexTurnChangesError, RuntimeError) as exc:
         log("codex", f"turn-attribution-failed thread={thread_id} error={exc}")
-        if "pending" in locals() and pending:
-            log(
-                "codex",
-                f"resume pending-without-attribution thread={thread_id} repos={len(pending)}",
-            )
-            changes = SimpleNamespace(
-                parent_thread_id="",
-                touched_paths=(),
-            )
-        else:
-            log("codex", f"fallback primary-repo-only thread={thread_id}")
-            return process_repo(cwd, payload, runtime="codex")
+        return maybe_continue(
+            payload,
+            state_failure_reason(
+                cwd,
+                f"repository discovery is incomplete: {exc}. "
+                "No repositories were finalized; pending transaction state was left intact. "
+                "Retry when Codex activity records are available. Git publication and "
+                "production activation have not been verified for the complete task.",
+            ),
+            cwd=cwd,
+        )
 
     if changes.parent_thread_id:
         log(
             "codex",
             f"skip subagent-stop thread={thread_id} parent={changes.parent_thread_id}",
         )
+        save_codex_transaction(thread_id, pending, clear_discovery=True)
         return None
 
     pending = adopt_descendant_codex_transactions(
@@ -1052,12 +1092,12 @@ def process_codex_repositories(
                     primary.phase = "committed"
     if not repositories:
         log("codex", f"skip no-attributed-files thread={thread_id}")
-        save_codex_transaction(thread_id, {})
+        save_codex_transaction(thread_id, {}, clear_discovery=True)
         return None
 
     attributed_path_count = sum(len(item.paths) for item in repositories.values())
     if len(repositories) > MAX_CODEX_REPOSITORIES:
-        save_codex_transaction(thread_id, repositories)
+        save_codex_transaction(thread_id, repositories, clear_discovery=True)
         return maybe_continue(
             payload,
             codex_failure_reason(
@@ -1070,7 +1110,7 @@ def process_codex_repositories(
             cwd=cwd,
         )
 
-    save_codex_transaction(thread_id, repositories)
+    save_codex_transaction(thread_id, repositories, clear_discovery=True)
     with lock_codex_repositories(list(repositories)):
         failures: list[str] = []
         for item in list(repositories.values()):

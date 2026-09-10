@@ -737,8 +737,9 @@ class CodexMultiRepoStopTests(TempDirTestCase):
             "committed\n",
         )
 
-    def test_pushes_precommitted_primary_when_attribution_is_unavailable(self) -> None:
+    def test_does_not_push_only_primary_when_attribution_is_unavailable(self) -> None:
         repo, remote = self.make_published_repo("repo")
+        published = run_command(["git", "-C", str(remote), "rev-parse", "HEAD"]).stdout
         path = repo / "fallback-commit.txt"
         path.write_text("fallback\n", encoding="utf-8")
         run_command(["git", "-C", str(repo), "add", "fallback-commit.txt"])
@@ -755,14 +756,18 @@ class CodexMultiRepoStopTests(TempDirTestCase):
                     {"session_id": "thread", "hook_event_name": "Stop"},
                 )
 
-        self.assertIsNone(output)
+        self.assertEqual(output["decision"], "block")
+        self.assertIn("repository discovery is incomplete", output["reason"])
         self.assertEqual(
-            run_command(["git", "-C", str(remote), "show", "HEAD:fallback-commit.txt"]).stdout,
-            "fallback\n",
+            run_command(["git", "-C", str(remote), "rev-parse", "HEAD"]).stdout,
+            published,
         )
 
-    def test_resumes_pending_push_when_attribution_is_unavailable(self) -> None:
+    def test_preserves_pending_push_until_complete_discovery_recovers(self) -> None:
         repo, remote = self.make_published_repo("repo")
+        sibling, sibling_remote = self.make_published_repo("sibling")
+        (sibling / "frontend.txt").write_text("frontend\n", encoding="utf-8")
+        published = run_command(["git", "-C", str(remote), "rev-parse", "HEAD"]).stdout
         path = repo / "pending-without-server.txt"
         path.write_text("pending\n", encoding="utf-8")
         run_command(["git", "-C", str(repo), "add", "pending-without-server.txt"])
@@ -788,9 +793,24 @@ class CodexMultiRepoStopTests(TempDirTestCase):
                     str(repo),
                     {"session_id": "thread", "hook_event_name": "Stop"},
                 )
+            preserved = stop.load_codex_transaction("thread")
+            self.assertEqual(output["decision"], "block")
+            self.assertEqual(set(preserved), set(state))
+            self.assertEqual(preserved[str(repo.resolve())].commit, commit)
+            self.assertEqual(preserved[str(repo.resolve())].phase, "committed")
+            self.assertEqual(
+                run_command(["git", "-C", str(remote), "rev-parse", "HEAD"]).stdout,
+                published,
+            )
+            changes = self.changes([])
+            changes.shell_paths = (str(sibling),)
+            with patch.object(stop, "collect_codex_turn_changes", return_value=changes):
+                recovered = stop.process_codex_repositories(
+                    str(repo), {"session_id": "thread", "hook_event_name": "Stop"}
+                )
             final_state = stop.load_codex_transaction("thread")
 
-        self.assertIsNone(output)
+        self.assertIsNone(recovered)
         self.assertEqual(final_state, {})
         self.assertEqual(
             run_command(
@@ -798,6 +818,28 @@ class CodexMultiRepoStopTests(TempDirTestCase):
             ).stdout,
             "pending\n",
         )
+        self.assertEqual(
+            run_command(["git", "-C", str(sibling_remote), "show", "HEAD:frontend.txt"]).stdout,
+            "frontend\n",
+        )
+
+    def test_missing_task_id_does_not_fall_back_to_single_repo(self) -> None:
+        with patch.object(stop, "process_repo") as single_repo:
+            output = stop.process_codex_repositories(str(self.temp_path), {"hook_event_name": "Stop"})
+        single_repo.assert_not_called()
+        self.assertEqual(output["decision"], "block")
+        self.assertIn("missing session_id", output["reason"])
+
+    def test_repeated_discovery_failure_reports_incomplete_without_retry_loop(self) -> None:
+        with patch.dict(os.environ, {"HOME": str(self.temp_path / "home")}):
+            with patch.object(stop, "collect_codex_turn_changes", side_effect=stop.CodexTurnChangesError("unavailable")), patch.object(stop, "process_repo") as single_repo:
+                output = stop.process_codex_repositories(
+                    str(self.temp_path), {"session_id": "thread", "stop_hook_active": True}
+                )
+        single_repo.assert_not_called()
+        self.assertNotIn("decision", output)
+        self.assertIn("repository discovery is incomplete", output["systemMessage"])
+        self.assertIn("No repositories were finalized", output["systemMessage"])
 
     def test_pushes_rewritten_equivalent_head_from_pending_transaction(self) -> None:
         repo, remote = self.make_published_repo("repo")

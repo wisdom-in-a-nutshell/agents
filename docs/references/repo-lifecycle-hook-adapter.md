@@ -102,6 +102,11 @@ All repo lifecycle hooks are Python. Do not add shell compatibility shims.
   even a read command can select a repo with pending changes. Unreferenced dirty
   siblings are untouched; clean candidates are skipped. Computed paths absent
   from command text/cwd still need explicit transaction registration.
+- Missing task identity or failed activity discovery stops finalization before
+  any Git mutation. Pending transactions remain available for a complete retry;
+  the hook returns actionable incomplete-finalization feedback instead of
+  publishing only the primary repo. A repeated continuation emits a warning
+  rather than starting an unbounded retry loop.
 - It uses attributed paths to identify repositories, then consolidates all
   staged and working-tree changes under deterministic repository locks.
   Concurrent tasks may overlap; staged-tree fingerprints detect same-path as

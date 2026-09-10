@@ -44,6 +44,7 @@ def collect_codex_turn_changes(
     thread_id: str,
     *,
     timeout_seconds: float = 8.0,
+    replay_before: int | None = None,
 ) -> CodexTurnChanges:
     """Return file changes and shell-used paths for the current turn tree."""
     normalized_thread_id = str(thread_id or "").strip()
@@ -56,8 +57,29 @@ def collect_codex_turn_changes(
             owner_turn = _latest_turn(owner)
             owner_session_id = _text(owner.get("sessionId")) or normalized_thread_id
             turn_started_at = _integer(owner_turn.get("startedAt"))
-            touched_paths = set(_file_change_paths(owner_turn))
-            shell_paths = command_repository_paths(owner_turn)
+            owner_turns = [owner_turn]
+            if replay_before is not None:
+                eligible_starts = [
+                    _integer(turn.get("startedAt"))
+                    for turn in owner.get("turns", [])
+                    if isinstance(turn, dict) and 0 < _integer(turn.get("startedAt")) <= replay_before
+                ]
+                if not eligible_starts:
+                    raise CodexTurnChangesError("Codex history does not cover the failed discovery checkpoint.")
+                turn_started_at = max(eligible_starts)
+                # Include all turns in the boundary second, then every retry
+                # turn. A retry must not forget shell edits in the failed turn.
+                owner_turns = [
+                    turn for turn in owner.get("turns", [])
+                    if isinstance(turn, dict) and _integer(turn.get("startedAt")) >= turn_started_at
+                ]
+            touched_paths: set[str] = set()
+            shell_paths: set[str] = set()
+            for turn in owner_turns:
+                touched_paths.update(_file_change_paths(turn))
+                shell_paths.update(command_repository_paths(turn))
+            if len(shell_paths) > MAX_SHELL_PATHS:
+                raise ValueError("Codex shell repository discovery exceeded retry path limits.")
 
             listed_threads = _list_threads(
                 client,
