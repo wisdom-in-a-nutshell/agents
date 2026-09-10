@@ -5,6 +5,8 @@ import importlib.util
 import os
 import subprocess
 import sys
+from contextlib import redirect_stderr, redirect_stdout
+from io import StringIO
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -14,6 +16,7 @@ from hooks.control_plane import (
     render_copilot_hooks,
     render_codex_hooks,
 )
+from hooks.scripts.codex_turn_changes import CodexTurnChanges
 from tests.control_plane.support import (
     REPO_ROOT,
     TempDirTestCase,
@@ -202,13 +205,11 @@ class HooksControlPlaneTests(TempDirTestCase):
         script_by_event = {
             "SessionStart": REPO_ROOT / "hooks/scripts/session_start.py",
             "UserPromptSubmit": REPO_ROOT / "hooks/scripts/user_prompt_submit.py",
-            "Stop": REPO_ROOT / "hooks/scripts/stop.py",
         }
         home = self.temp_path / "home"
         for event in (
             "SessionStart",
             "UserPromptSubmit",
-            "Stop",
         ):
             payload = {
                 "cwd": str(self.temp_path),
@@ -233,6 +234,31 @@ class HooksControlPlaneTests(TempDirTestCase):
             self.assertEqual(result.returncode, 0)
             self.assertEqual(result.stdout, "")
             self.assertEqual(result.stderr, "")
+
+    def test_stop_runner_is_silent_after_successful_discovery(self) -> None:
+        module = self.load_stop_module()
+        payload = {
+            "cwd": str(self.temp_path),
+            "hook_event_name": "Stop",
+            "session_id": "session",
+        }
+        changes = CodexTurnChanges(
+            thread_id="session", session_id="session", parent_thread_id="",
+            descendant_thread_ids=(), turn_id="turn", turn_started_at=100,
+            touched_paths=(),
+        )
+        stdout, stderr = StringIO(), StringIO()
+        # A successful runner requires successful activity discovery. Keep this
+        # fixture independent of the machine's live Codex App Server.
+        with (
+            patch.object(module, "collect_codex_turn_changes", return_value=changes),
+            patch.object(sys, "argv", ["stop.py", "--runtime", "codex"]),
+            patch.object(sys, "stdin", StringIO(json.dumps(payload))),
+            redirect_stdout(stdout), redirect_stderr(stderr),
+        ):
+            self.assertEqual(module.main(), 0)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertEqual(stderr.getvalue(), "")
 
     def test_session_start_runs_repo_script_from_git_root(self) -> None:
         repo = init_git_repo(self.temp_path / "repo")
