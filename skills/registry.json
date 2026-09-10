@@ -424,6 +424,10 @@
       "skill": "blog-posting"
     },
     {
+      "repo": "modal_functions",
+      "skill": "modal-function-intake"
+    },
+    {
       "repo": "win",
       "skill": "add-env-var"
     },
