@@ -53,10 +53,20 @@ Use local or Modal-internal storage for every intermediate in an all-Modal
 subgraph. Materialize publicly only at the first consumer that genuinely needs
 an HTTP URL.
 
+WIN orchestration and asynchronous job boundaries can pass persisted artifact
+references without reading the bytes. They do not alone justify publication.
+Keep Source identity/provenance separate from temporary location; link through
+the existing artifact cache rather than storing Modal URIs in HTTP URL fields.
+Background uploads still transfer the same bytes: select retained outputs
+explicitly. Native S3 on the Mac is still an outbound destination for Modal.
+Read Modal's `docs/references/media-transfer-policy.md` for dated billing facts
+and WIN's `docs/architecture/media-source-identity-and-storage.md` for the planned
+acquisition migration; do not treat the target as an already-shipped schema.
+
 ## Ownership And Cleanup Rules
 
-- Generic utilities default to `cache/`; `share/` and `permanent/` require an
-  explicit owning workflow.
+- Generic public uploads default to `cache/`; `share/` and `permanent/` require
+  an explicit owning workflow. Internal consumers use internal artifacts.
 - Browser APIs expose purpose/upload intents, not raw lifecycle-folder choice.
 - Every durable key should identify its owner, for example
   `permanent/ads/<source_id>/...` or
