@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import os
 import sys
+from contextlib import redirect_stdout, redirect_stderr
 from pathlib import Path
 from typing import Any
 from types import SimpleNamespace
@@ -259,7 +261,7 @@ class FinalizeStaleCodexThreadsTests(TempDirTestCase):
         log_path = self.temp_path / "args.json"
         finalizer = write_executable(
             self.temp_path / "finalize-codex-thread.py",
-            """#!/usr/bin/env python3
+            """#!/missing/python-from-another-environment
 import json, pathlib, sys
 path = pathlib.Path(__LOG_PATH__)
 path.write_text(json.dumps(sys.argv[1:]))
@@ -295,6 +297,45 @@ print(json.dumps({
         self.assertEqual(argv[argv.index("--thread-id") + 1], "thread-123")
         self.assertNotIn("--cwd", argv)
         self.assertEqual(result["thread_id"], "thread-123")
+
+    def test_child_failure_preserves_structured_cause_instead_of_incidental_stderr(self) -> None:
+        module = load_stale_finalizer_module()
+        command = write_executable(self.temp_path / "finalizer.py", "#!/usr/bin/env python3\n")
+        completed = SimpleNamespace(
+            returncode=4,
+            stdout=json.dumps({"status": "error", "error": {"message": "Missing WebSocket dependency"}}),
+            stderr="unrelated startup diagnostic",
+        )
+        with patch.object(module.subprocess, "run", return_value=completed) as run:
+            with self.assertRaisesRegex(module.AppServerError, "Missing WebSocket dependency"):
+                module.run_thread_finalizer(
+                    command=command, candidate=SimpleNamespace(thread_id="target"),
+                    timeout_seconds=1, finalization_timeout_seconds=1,
+                )
+        self.assertEqual(run.call_args.args[0][:2], [sys.executable, str(command)])
+
+    def test_plain_log_distinguishes_failure_from_activity_skip_and_includes_cause(self) -> None:
+        module = load_stale_finalizer_module()
+        common = {"updated_at_utc": "2026-09-08T00:00:00Z", "cwd": "/repo", "name": "Example"}
+        payload = {
+            "status": "error", "meta": {"timestamp_utc": "2026-09-11T00:00:00Z"},
+            "data": {"applied": True, "candidate_count": 2, "failed_count": 1, "skipped_count": 2,
+                     "candidates": [
+                         dict(common, thread_id="failed-id", skipped_reason="finalizer_failed",
+                              finalizer_error="Missing WebSocket dependency\nRun the dependency installer"),
+                         dict(common, thread_id="active-id", skipped_reason="active_thread"),
+                     ]},
+            "error": {"code": "PartialFinalizeFailure", "message": "1 failed"},
+        }
+        output = io.StringIO()
+        with redirect_stdout(output), redirect_stderr(io.StringIO()):
+            module.emit_plain(payload)
+        lines = output.getvalue().splitlines()
+        self.assertIn("timestamp=2026-09-11T00:00:00Z", lines[0])
+        self.assertTrue(lines[1].startswith("failed "))
+        self.assertIn("reason=finalizer_failed error=Missing WebSocket dependency Run the dependency installer", lines[1])
+        self.assertTrue(lines[2].startswith("skipped "))
+        self.assertIn("reason=active_thread", lines[2])
 
     def test_processing_continues_after_one_finalizer_failure(self) -> None:
         module = load_stale_finalizer_module()

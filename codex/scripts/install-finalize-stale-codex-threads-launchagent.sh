@@ -10,6 +10,8 @@ MAX_REPORT=25
 RUN_AT_LOAD=1
 CONTROL_PLANE_ROOT="${AGENTS_CONTROL_PLANE_ROOT:-${HOME}/GitHub/agents}"
 SCRIPT_PATH="${CONTROL_PLANE_ROOT}/codex/scripts/finalize-stale-codex-threads.py"
+DEPENDENCY_SCRIPT="${CONTROL_PLANE_ROOT}/codex/scripts/install-thread-finalizer-deps.sh"
+PYTHON_BIN=""
 PLIST_PATH="${HOME}/Library/LaunchAgents/${LABEL}.plist"
 LEGACY_PLIST_PATH="${HOME}/Library/LaunchAgents/${LEGACY_LABEL}.plist"
 LOG_DIR="${HOME}/.local/state/codex-control-plane/log"
@@ -31,6 +33,7 @@ Options:
   --older-than-hours <n>     Forwarded stale-thread threshold (default: 24)
   --max-report <n>           Candidate detail lines kept in launchd logs (default: 25)
   --script <path>            Stale-thread finalizer script path
+  --python <path>            Override the shared preferred Homebrew Python
   --run-at-load              Run once immediately when loaded (default)
   --no-run-at-load           Wait until the first interval fires
   -h, --help                 Show this help
@@ -78,6 +81,7 @@ render_plist() {
 
     <key>ProgramArguments</key>
     <array>
+      <string>$(xml_escape "$PYTHON_BIN")</string>
       <string>$(xml_escape "$SCRIPT_PATH")</string>
       <string>--apply</string>
       <string>--older-than-hours</string>
@@ -150,6 +154,11 @@ while [[ $# -gt 0 ]]; do
       SCRIPT_PATH="${2:-}"
       shift 2
       ;;
+    --python)
+      [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || die "--python requires a path"
+      PYTHON_BIN="$2"
+      shift 2
+      ;;
     --run-at-load)
       RUN_AT_LOAD=1
       shift
@@ -174,11 +183,21 @@ is_int "$INTERVAL_SECONDS" || die "invalid --interval-seconds: $INTERVAL_SECONDS
 (( INTERVAL_SECONDS >= 300 )) || die "--interval-seconds must be >= 300"
 is_number "$OLDER_THAN_HOURS" || die "invalid --older-than-hours: $OLDER_THAN_HOURS"
 is_int "$MAX_REPORT" || die "invalid --max-report: $MAX_REPORT"
+[[ -x "$DEPENDENCY_SCRIPT" ]] || die "Dependency installer missing: $DEPENDENCY_SCRIPT"
+
+python_args=()
+if [[ -n "$PYTHON_BIN" ]]; then
+  python_args+=(--python "$PYTHON_BIN")
+fi
+PYTHON_BIN="$("$DEPENDENCY_SCRIPT" --print-python "${python_args[@]}")" || die "Cannot resolve the thread finalizer Python interpreter"
 
 if (( APPLY == 0 )); then
   render_plist
   exit 0
 fi
+
+# Install for the exact interpreter in ProgramArguments before replacing or loading the job.
+"$DEPENDENCY_SCRIPT" --apply --python "$PYTHON_BIN"
 
 mkdir -p "$(dirname "$PLIST_PATH")" "$LOG_DIR"
 TMP_PLIST="$(mktemp)"
@@ -203,4 +222,5 @@ printf 'Loaded %s from %s\n' "$LABEL" "$PLIST_PATH"
 printf 'Removed legacy LaunchAgent if present: %s\n' "$LEGACY_LABEL"
 printf 'Interval: %ss\n' "$INTERVAL_SECONDS"
 printf 'Finalize threshold: updatedAt older than %sh\n' "$OLDER_THAN_HOURS"
+printf 'Python: %s\n' "$PYTHON_BIN"
 printf 'Logs:\n  %s\n  %s\n' "$OUT_LOG" "$ERR_LOG"

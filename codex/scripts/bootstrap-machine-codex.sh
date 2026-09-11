@@ -101,7 +101,6 @@ SYNC_TRUSTED_SCRIPT="${SCRIPT_DIR}/sync-trusted-projects.sh"
 SYNC_REPO_CONFIGS_SCRIPT="${SCRIPT_DIR}/sync-repo-codex-configs.sh"
 SYNC_HOOK_TRUST_SCRIPT="${SCRIPT_DIR}/sync-hook-trust-state.py"
 PDF_DEPS_SCRIPT="${SCRIPT_DIR}/install-pdf-skill-deps.sh"
-THREAD_FINALIZER_DEPS_SCRIPT="${SCRIPT_DIR}/install-thread-finalizer-deps.sh"
 FINALIZE_STALE_THREADS_LAUNCHAGENT_SCRIPT="${SCRIPT_DIR}/install-finalize-stale-codex-threads-launchagent.sh"
 ARCHIVE_CLAUDE_SESSIONS_LAUNCHAGENT_SCRIPT="${SCRIPT_DIR}/install-archive-stale-claude-sessions-launchagent.sh"
 CHECK_CONTROL_PLANE_SCRIPT="${SCRIPT_DIR}/check-codex-control-plane.sh"
@@ -112,7 +111,6 @@ CHECK_CONTROL_PLANE_SCRIPT="${SCRIPT_DIR}/check-codex-control-plane.sh"
 [[ -x "$SYNC_REPO_CONFIGS_SCRIPT" ]] || die "Missing executable: $SYNC_REPO_CONFIGS_SCRIPT"
 [[ -x "$SYNC_HOOK_TRUST_SCRIPT" ]] || die "Missing executable: $SYNC_HOOK_TRUST_SCRIPT"
 [[ -x "$PDF_DEPS_SCRIPT" ]] || die "Missing executable: $PDF_DEPS_SCRIPT"
-[[ -x "$THREAD_FINALIZER_DEPS_SCRIPT" ]] || die "Missing executable: $THREAD_FINALIZER_DEPS_SCRIPT"
 [[ -x "$FINALIZE_STALE_THREADS_LAUNCHAGENT_SCRIPT" ]] || die "Missing executable: $FINALIZE_STALE_THREADS_LAUNCHAGENT_SCRIPT"
 [[ -x "$ARCHIVE_CLAUDE_SESSIONS_LAUNCHAGENT_SCRIPT" ]] || die "Missing executable: $ARCHIVE_CLAUDE_SESSIONS_LAUNCHAGENT_SCRIPT"
 [[ -x "$CHECK_CONTROL_PLANE_SCRIPT" ]] || die "Missing executable: $CHECK_CONTROL_PLANE_SCRIPT"
@@ -168,13 +166,6 @@ pdf_deps_cmd=(
 )
 log "+ ${pdf_deps_cmd[*]}"
 "${pdf_deps_cmd[@]}"
-
-thread_finalizer_deps_cmd=(
-  "$THREAD_FINALIZER_DEPS_SCRIPT"
-  "$MODE_FLAG"
-)
-log "+ ${thread_finalizer_deps_cmd[*]}"
-"${thread_finalizer_deps_cmd[@]}"
 
 finalize_stale_threads_launchagent_cmd=(
   "$FINALIZE_STALE_THREADS_LAUNCHAGENT_SCRIPT"

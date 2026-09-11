@@ -217,12 +217,14 @@ Use [Codex Control Plane Ownership](/Users/dobby/GitHub/agents/docs/references/c
   - finalizes only non-archived threads whose `updatedAt` is older than the configured threshold; default is 24 hours
   - does not try to detect what the Desktop app currently has loaded; the safety boundary is the last-activity cutoff
   - isolates per-thread finalizer failures: a locked or broken thread is reported with `skipped_reason=finalizer_failed`, remaining candidates are still processed, and the command exits `4` with `error.code=PartialFinalizeFailure` so runtime health checks retain a failure signal
+  - plain scheduler logs include the run timestamp and each failed/skipped task's reason and underlying error; child JSON error messages take precedence over incidental stderr output
+  - executes the Python child finalizer with `sys.executable` so selection, finalization, and repo policy share the scheduled interpreter
   - defaults to dry-run; use `--apply` for actual finalization
   - uses a machine-local lock under `~/.local/state/codex-control-plane/` so overlapping launchd runs do not race
 - [`finalize-codex-thread.py`](/Users/dobby/GitHub/agents/codex/scripts/finalize-codex-thread.py)
   - takes only `--thread-id` as canonical thread identity
   - connects using WebSocket over `$CODEX_HOME/app-server-control/app-server-control.sock` (default `~/.codex`) to the existing daemon, uses `thread/read` to derive the thread `cwd`, resolves the repo root, runs optional repo policy at `scripts/hooks/finalize_codex_thread.py`, then archives the source thread through `thread/archive`; repo policy owns any finalization model turn
-  - uses `websockets==16.0`, installed by `codex/scripts/install-thread-finalizer-deps.sh --apply` during machine bootstrap. The socket requires WebSocket framing with compression disabled; `codex app-server proxy` only relays bytes and cannot accept bare JSONL requests
+  - uses `websockets==16.0`, installed by `codex/scripts/install-thread-finalizer-deps.sh --apply` for the shared preferred Python. The socket requires WebSocket framing with compression disabled; `codex app-server proxy` only relays bytes and cannot accept bare JSONL requests
   - requires the shared daemon even for a dry-run; check it with `codex app-server daemon version`. A missing daemon fails before repo policy runs, without falling back to a private server; the hourly scheduler retries eligible tasks on its next run
   - the daemon broadcasts `thread/archived` to connected clients, allowing a Desktop SSH connection using that daemon to remove the sidebar entry. The archive/sidebar step makes no model calls and does not edit Codex databases directly
   - checks shared-daemon activity before repo policy and again before archive, including loaded descendants because archive closes descendants too; an active task family is left for a later run with `skipped_reason=active_thread`. These checks reduce races but are not an atomic conditional archive. Connection or archive failure may leave the task unarchived, and a later retry may rerun its repo hook
@@ -231,6 +233,8 @@ Use [Codex Control Plane Ownership](/Users/dobby/GitHub/agents/docs/references/c
   - for repos without `scripts/hooks/finalize_codex_thread.py`, finalization is archive-only
 - [`install-finalize-stale-codex-threads-launchagent.sh`](/Users/dobby/GitHub/agents/codex/scripts/install-finalize-stale-codex-threads-launchagent.sh)
   - renders `~/Library/LaunchAgents/com.<user>.codex-thread-finalizer.plist`
+  - resolves the machine's preferred Python through `~/GitHub/scripts/setup/codex/resolve-preferred-homebrew-python.sh` (currently Python 3.13), pins that interpreter explicitly in `ProgramArguments`, and installs/verifies its WebSocket dependency before loading the job; `--python` is an explicit override
+  - never rely on the scheduler's bare `python3`: `/opt/homebrew/bin/python3` may point to a different major/minor version than the managed shell. User-installed Python packages belong to an interpreter version, so an interactive import check alone does not validate launchd
   - schedules [`finalize-stale-codex-threads.py`](/Users/dobby/GitHub/agents/codex/scripts/finalize-stale-codex-threads.py) every hour by default
   - removes the legacy `com.<user>.codex-session-archiver` LaunchAgent if present during apply
   - writes logs under `~/.local/state/codex-control-plane/log/`
