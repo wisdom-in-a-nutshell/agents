@@ -3,6 +3,7 @@ set -euo pipefail
 
 APPLY=0
 PRINT_PYTHON=0
+PRINT_PYTHON_PATH=0
 PYTHON_BIN=""
 WEBSOCKETS_VERSION="16.0"
 
@@ -19,6 +20,8 @@ Options:
   --dry-run          Show actions only (default)
   --python <path>    Override the shared preferred Homebrew Python
   --print-python     Print the resolved interpreter only; do not check or install
+  --print-python-path
+                     Print its directory for nested python3 commands
   -h, --help         Show this help
 USAGE
 }
@@ -51,6 +54,10 @@ while [[ $# -gt 0 ]]; do
       PRINT_PYTHON=1
       shift
       ;;
+    --print-python-path)
+      PRINT_PYTHON_PATH=1
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -61,6 +68,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+python_resolver=""
 if [[ -z "$PYTHON_BIN" ]]; then
   python_resolver="${HOME}/GitHub/scripts/setup/codex/resolve-preferred-homebrew-python.sh"
   [[ -x "$python_resolver" ]] || die "Preferred Python resolver missing: $python_resolver. Bootstrap ~/GitHub/scripts or pass --python explicitly."
@@ -69,6 +77,15 @@ fi
 command -v "$PYTHON_BIN" >/dev/null 2>&1 || die "Python not found: $PYTHON_BIN"
 PYTHON_BIN="$("$PYTHON_BIN" -c 'import sys; print(sys.executable)')" || die "Cannot inspect the selected Python interpreter"
 [[ "$PYTHON_BIN" == /* && -x "$PYTHON_BIN" ]] || die "Python returned an invalid executable: $PYTHON_BIN"
+if (( PRINT_PYTHON_PATH == 1 )); then
+  python_path_bin="$PYTHON_BIN"
+  if [[ -n "$python_resolver" ]]; then
+    python_path_bin="$("$python_resolver" --output python-shim)" || die "Cannot resolve the preferred Homebrew Python shim"
+    [[ -x "$python_path_bin" ]] || die "Preferred Python shim missing: $python_path_bin"
+  fi
+  dirname "$python_path_bin"
+  exit 0
+fi
 if (( PRINT_PYTHON == 1 )); then
   printf '%s\n' "$PYTHON_BIN"
   exit 0

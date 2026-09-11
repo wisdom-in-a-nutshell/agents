@@ -49,7 +49,10 @@ env = dict(os.environ, PYTHONPATH=str(site), PYTHONNOUSERSITE='1')
 sys.exit(subprocess.run([{sys.executable!r}, *sys.argv[1:]], env=env).returncode)
 """,
         )
-        return python, pip_log
+        nested_python = self.temp_path / "python3"
+        if not nested_python.exists():
+            nested_python.symlink_to(python)
+        return python.resolve(), pip_log
 
 
 class ThreadFinalizerDependencyTests(ThreadFinalizerFixture):
@@ -102,7 +105,13 @@ class ThreadFinalizerLaunchAgentTests(ThreadFinalizerFixture):
         python, pip_log = self._python_fixture(installed)
         home = self.temp_path / "home"
         resolver = home / "GitHub/scripts/setup/codex/resolve-preferred-homebrew-python.sh"
-        write_executable(resolver, f"#!/bin/bash\nprintf '%s\\n' {str(python)!r}\n")
+        write_executable(resolver, f"""#!/bin/bash
+if [[ "$2" == python-shim ]]; then
+  printf '%s\\n' {str(python.parent / 'python3')!r}
+else
+  printf '%s\\n' {str(python)!r}
+fi
+""")
         tools = self.temp_path / "ambient-bin"
         launch_log = self.temp_path / "launchctl.log"
         unexpected_python = self.temp_path / "wrong-python.log"
@@ -131,6 +140,10 @@ class ThreadFinalizerLaunchAgentTests(ThreadFinalizerFixture):
         self.assertEqual(payload["ProgramArguments"][:2], [
             str(python), str(REPO_ROOT / "codex/scripts/finalize-stale-codex-threads.py"),
         ])
+        self.assertEqual(str(python.parent), payload["EnvironmentVariables"]["PATH"].split(":")[0])
+        nested = run_command(["/usr/bin/env", "python3", "-c", "import sys; print(sys.executable)"],
+                             env=payload["EnvironmentVariables"])
+        self.assertEqual(str(python), nested.stdout.strip())
         self.assertFalse(wrong_python.exists())
         self.assertFalse(pip_log.exists())
 

@@ -12,6 +12,7 @@ CONTROL_PLANE_ROOT="${AGENTS_CONTROL_PLANE_ROOT:-${HOME}/GitHub/agents}"
 SCRIPT_PATH="${CONTROL_PLANE_ROOT}/codex/scripts/finalize-stale-codex-threads.py"
 DEPENDENCY_SCRIPT="${CONTROL_PLANE_ROOT}/codex/scripts/install-thread-finalizer-deps.sh"
 PYTHON_BIN=""
+RUNTIME_PATH=""
 PLIST_PATH="${HOME}/Library/LaunchAgents/${LABEL}.plist"
 LEGACY_PLIST_PATH="${HOME}/Library/LaunchAgents/${LEGACY_LABEL}.plist"
 LOG_DIR="${HOME}/.local/state/codex-control-plane/log"
@@ -105,7 +106,7 @@ render_plist() {
     <key>EnvironmentVariables</key>
     <dict>
       <key>PATH</key>
-      <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+      <string>$(xml_escape "$RUNTIME_PATH")</string>
       <key>HOME</key>
       <string>$(xml_escape "$HOME")</string>
     </dict>
@@ -190,6 +191,8 @@ if [[ -n "$PYTHON_BIN" ]]; then
   python_args+=(--python "$PYTHON_BIN")
 fi
 PYTHON_BIN="$("$DEPENDENCY_SCRIPT" --print-python "${python_args[@]}")" || die "Cannot resolve the thread finalizer Python interpreter"
+PYTHON_PATH="$("$DEPENDENCY_SCRIPT" --print-python-path "${python_args[@]}")" || die "Cannot resolve the thread finalizer Python PATH"
+RUNTIME_PATH="${PYTHON_PATH}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 if (( APPLY == 0 )); then
   render_plist
@@ -214,9 +217,7 @@ DOMAIN="gui/$(id -u)"
 remove_legacy_launchagent "$DOMAIN"
 launchctl bootout "$DOMAIN" "$PLIST_PATH" >/dev/null 2>&1 || true
 launchctl bootstrap "$DOMAIN" "$PLIST_PATH"
-if (( RUN_AT_LOAD == 1 )); then
-  launchctl kickstart -k "$DOMAIN/$LABEL" >/dev/null 2>&1 || true
-fi
+# RunAtLoad starts the job once on bootstrap; kickstart -k would interrupt that run.
 
 printf 'Loaded %s from %s\n' "$LABEL" "$PLIST_PATH"
 printf 'Removed legacy LaunchAgent if present: %s\n' "$LEGACY_LABEL"
