@@ -146,7 +146,8 @@ def emit_plain(payload: dict[str, Any]) -> None:
         mode = "apply" if data.get("applied") else "dry-run"
         outcome = "ok" if status == "ok" else "partial"
         print(
-            f"{outcome} mode={mode} candidates={data.get('candidate_count', 0)} "
+            f"{outcome} timestamp={payload.get('meta', {}).get('timestamp_utc', 'unknown')} "
+            f"mode={mode} candidates={data.get('candidate_count', 0)} "
             f"finalized={data.get('finalized_count', 0)} "
             f"skipped={data.get('skipped_count', 0)} "
             f"failed={data.get('failed_count', 0)}"
@@ -158,9 +159,16 @@ def emit_plain(payload: dict[str, Any]) -> None:
             action = "finalized" if item.get("finalized") else "would_finalize"
             if item.get("skipped_reason"):
                 action = "skipped"
+            if item.get("finalizer_error"):
+                action = "failed"
+            detail = ""
+            if item.get("skipped_reason"):
+                detail += f" reason={item['skipped_reason']}"
+            if item.get("finalizer_error"):
+                detail += f" error={one_line(item['finalizer_error'], max_chars=500)}"
             print(
                 f"{action} updated_at={item['updated_at_utc']} "
-                f"cwd={item['cwd']} id={item['thread_id']} name={one_line(item['name'])}"
+                f"cwd={item['cwd']} id={item['thread_id']} name={one_line(item['name'])}{detail}"
             )
         omitted = len(candidates) - len(report_items)
         if omitted > 0:
@@ -518,6 +526,7 @@ def run_thread_finalizer(
 
     completed = subprocess.run(
         [
+            sys.executable,
             str(command),
             "--thread-id",
             candidate.thread_id,
@@ -536,15 +545,19 @@ def run_thread_finalizer(
         text=True,
         timeout=finalization_timeout_seconds + max(timeout_seconds, 1.0) + 10.0,
     )
-    if completed.returncode != 0:
-        stderr = completed.stderr.strip()
-        stdout = completed.stdout.strip()
-        detail = stderr or stdout or f"exit {completed.returncode}"
-        raise AppServerError(f"finalizer failed for {candidate.thread_id}: {detail}")
     try:
         payload = json.loads(completed.stdout)
     except json.JSONDecodeError as exc:
-        raise AppServerError(f"finalizer returned invalid JSON for {candidate.thread_id}: {exc}") from exc
+        if completed.returncode == 0:
+            raise AppServerError(f"finalizer returned invalid JSON for {candidate.thread_id}: {exc}") from exc
+        payload = None
+    if completed.returncode != 0:
+        stderr = completed.stderr.strip()
+        stdout = completed.stdout.strip()
+        error = payload.get("error") if isinstance(payload, dict) else None
+        message = error.get("message") if isinstance(error, dict) else None
+        detail = message or stderr or stdout or f"exit {completed.returncode}"
+        raise AppServerError(f"finalizer failed for {candidate.thread_id}: {detail}")
     if not isinstance(payload, dict):
         raise AppServerError(f"finalizer returned malformed JSON for {candidate.thread_id}")
     if payload.get("status") != "ok":
@@ -662,7 +675,8 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--registry", type=Path, default=DEFAULT_REGISTRY)
     parser.add_argument("--repo", action="append", default=[], help="Limit to an exact repo/cwd path. Repeatable.")
-    parser.add_argument("--finalizer-command", type=Path, default=DEFAULT_FINALIZER_COMMAND)
+    parser.add_argument("--finalizer-command", type=Path, default=DEFAULT_FINALIZER_COMMAND,
+                        help="Python finalizer script; executed with this scheduler's interpreter.")
     parser.add_argument("--page-limit", type=int, default=DEFAULT_PAGE_LIMIT)
     parser.add_argument("--timeout-seconds", type=float, default=DEFAULT_TIMEOUT_SECONDS)
     parser.add_argument("--finalization-timeout-seconds", type=float, default=DEFAULT_FINALIZATION_TIMEOUT_SECONDS)
