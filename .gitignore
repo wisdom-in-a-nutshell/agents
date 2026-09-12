@@ -44,3 +44,8 @@ skills/.obsidian/
 /tmp/
 /.tmp/
 /temp/
+
+# The registry is source; user-scope skill links are generated runtime state.
+# This also prevents a retained ~/.agents checkout publishing its live links.
+/skills/*
+!/skills/registry.json

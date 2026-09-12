@@ -293,11 +293,14 @@ def run_sync(
         prune_dormant_repo_links(root_dir, github_root, dormant_skills, apply, repo_filters)
     )
     if apply:
-        registered = register_current_codex_transaction_paths(touched_links)
+        # User-scope links are runtime state, even when a historical source
+        # checkout still surrounds ~/.agents. Only repo-scoped links publish.
+        repo_touched_links = {path for path in touched_links if path.parent != user_skills_dir}
+        registered = register_current_codex_transaction_paths(repo_touched_links)
         for git_root, item in sorted(registered.items()):
             print(f"REGISTER CODEX STOP {git_root}: {' '.join(sorted(item.paths))}")
-        touched_links.update(desired_links)
-        stage_git_paths(touched_links)
+        repo_touched_links.update(path for path in desired_links if path.parent != user_skills_dir)
+        stage_git_paths(repo_touched_links)
 
 
 def prune_obsolete_global_links(

@@ -4,6 +4,10 @@ Use this page for the machine-facing apply and validation entrypoints that live 
 
 This repo manages shared agent surfaces for Codex, Claude Code, GitHub Copilot, skills, plugins, MCP presets, lifecycle hooks, and the local dashboard. The temporary Antigravity spike script is tracked for manual experiments but is disabled in the shared machine bootstrap. `~/.agents` is no longer the source checkout; it is reserved for runtime surfaces such as Codex and Copilot user-scope skills at `~/.agents/skills`.
 
+Only `skills/registry.json` is tracked in the top-level `skills/` folder; generated user-scope links are ignored. This keeps any retained historical `~/.agents` checkout from publishing runtime links into the source repo. Fast checks validate the current source tree, while machine-enrollment checks default to `~/GitHub/agents` (override with `AGENTS_MANAGED_REPO_CHECK_ROOT` for another canonical checkout).
+
+Skill sync renders global links without staging them or registering them with Codex Stop; only repo-scoped links participate in checked publication, even if a user-scope runtime folder happens to sit inside a Git checkout.
+
 Sparse machines are normal. A repo listed in the shared registries but not cloned on the current machine is skipped silently by sync/check commands. Existing non-git folders at managed repo paths still warn because they may be broken placeholders that should be deleted or replaced with a real checkout.
 
 For repo authors adding `scripts/hooks/*.py`, start with [`repo-lifecycle-hook-adapter.md`](/Users/dobby/GitHub/agents/docs/references/repo-lifecycle-hook-adapter.md).

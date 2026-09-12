@@ -21,6 +21,11 @@ class ManagedSkillsRegistrySyncTests(TempDirTestCase):
         home = self.temp_path / "home"
         github_root = home / "GitHub"
         adi = init_git_repo(github_root / "adi")
+        # A retained source checkout must not turn global runtime links into
+        # repository changes (including when those links are ignored).
+        runtime = init_git_repo(home / ".agents", with_initial_commit=True)
+        (runtime / ".gitignore").write_text("/skills/\n", encoding="utf-8")
+        commit_all(runtime, "ignore generated user-scope skills")
 
         global_source = make_skill_source(
             root / "skills-source/owned/global-helper",
@@ -96,7 +101,7 @@ class ManagedSkillsRegistrySyncTests(TempDirTestCase):
                 "--apply",
                 str(registry_path),
             ],
-            env={"HOME": str(home)},
+            env={"HOME": str(home), "CODEX_THREAD_ID": "global-runtime-test"},
         )
 
         global_link = user_skills_dir / "global-helper"
@@ -109,6 +114,10 @@ class ManagedSkillsRegistrySyncTests(TempDirTestCase):
         self.assertFalse(stale_link.exists())
         self.assertFalse(dormant_global_link.exists())
         self.assertFalse(dormant_repo_link.exists())
+        self.assertEqual("", run_command(["git", "status", "--porcelain"], cwd=runtime).stdout)
+        digest = hashlib.sha256(b"global-runtime-test").hexdigest()
+        transaction = read_json(home / ".local/state/agents-control-plane/codex-stop-transactions" / f"{digest}.json")
+        self.assertEqual([str(adi.resolve())], [item["root"] for item in transaction["repositories"]])
 
         self.assertFalse((root / "docs/references/registry").exists())
 
