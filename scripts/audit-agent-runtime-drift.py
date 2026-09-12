@@ -26,6 +26,7 @@ APP_MANAGED_PLUGIN_IDS = {
     "plugin-management@openai-curated-remote",
     "presentations@openai-primary-runtime",
     "spreadsheets@openai-primary-runtime",
+    "sites@openai-curated-remote",
     "template-creator@openai-primary-runtime",
 }
 REVIEW_MARKETPLACE_PREFIXES = ("openai-",)

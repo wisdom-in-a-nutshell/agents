@@ -151,11 +151,12 @@ class AgentRuntimeDriftAuditTests(TempDirTestCase):
         self.assertEqual(payload["status"], "ok")
         self.assertEqual(payload["data"]["summary"]["errors"], 0)
 
-    def test_audit_allows_app_managed_openai_review_plugin(self) -> None:
+    def test_audit_allows_app_managed_openai_review_plugins(self) -> None:
         home = self.temp_path / "home"
         self._write_live_codex_config(home)
         self._write_required_plugins(home)
         self._write_plugin(home, "openai-curated-remote", "plugin-management")
+        self._write_plugin(home, "openai-curated-remote", "sites", version="0.1.62")
 
         result = run_command(
             [
