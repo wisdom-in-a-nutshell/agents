@@ -1,5 +1,5 @@
 # Profile for autonomous health-incident remediation.
 # Use with: codex --profile autofix
 
-model = "gpt-5.4"
+model = "gpt-5.6-sol"
 model_reasoning_effort = "medium"
