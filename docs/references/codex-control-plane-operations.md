@@ -394,3 +394,52 @@ Fix:
     - it reaches the MacBook through Tailscale with `ProxyCommand tailscale nc %h %p`
     - older references to `macbook-wan` are stale and should not be used as current setup guidance
 - The control plane is designed to be home-relative at apply time, not by committing one machine's absolute paths into canonical templates.
+
+## Opt-in Azure Astra worker
+
+Use `codex exec -p azure-astra --json "BOUNDED TASK"` for an explicit standalone
+Codex worker. The
+canonical `codex/config/azure-astra.config.toml` is distributed by the existing
+profile sync to `~/.codex/azure-astra.config.toml`. Global model/provider defaults
+remain unchanged.
+
+This profile runs `gpt-6-astra` at medium reasoning through the existing
+`https://llm.aipodcast.ing/v1` Responses gateway; deployment routing is owned by
+the sibling LiteLLM repo. It is for bounded research, drafting and code review,
+read-only, with provider-hosted web search disabled and the default service tier.
+It does not authorize outreach, agreements, spending, commits, or further workers.
+Parents still review evidence and results.
+
+Provider auth invokes `codex/scripts/azure-astra-token.py`, reading only the
+generated `~/.secrets/litellm/env` entry `LLM_API_KEY`. It parses rather than
+sources the file and fails closed on missing/duplicate/invalid entries. Never
+log its stdout or run it in a visible terminal: stdout is the auth consumer's
+token channel. Canonical secret/materialization ownership remains unchanged.
+
+**Native child-provider limitation:** on Codex 0.154.0, a native custom role
+named azure_astra could spawn but session metadata still recorded the inherited
+`openai` provider. Therefore no misleading native Azure role is installed.
+The standalone profile is the verified provider boundary; a role name or successful
+answer alone is not billing provenance. Revisit native delegation only when
+child session metadata proves its provider is Azure, not merely its model/name.
+
+A direct isolated Codex tool-loop probe using this provider read a local canary
+successfully. Gateway model-list discovery emitted a shape warning but inference
+worked; this is not evidence that every gateway/tool feature works. Usage for
+that probe included 14,725 cached input tokens, not a guaranteed future cache rate.
+Parent supervision and returned results still consume parent Codex context; no
+quantified net usage saving is claimed.
+
+Final profile smoke, 12 September 2026: `codex exec --strict-config -p
+azure-astra` ran without a ChatGPT auth file in its isolated runtime home.
+Session `01a09624-b407-7642-b042-6271d877dfad` recorded provider `azure_astra`,
+model `gpt-6-astra`, medium reasoning; a shell read returned the exact canary
+and the turn exited successfully. Usage: 27,467 input, 13,687 cached input,
+67 output tokens. The installed profile matched canonical bytes and the global
+provider remained implicit OpenAI. All 257 control-plane regression tests passed.
+This proves the standalone tool loop and provider selection, not native mixed-provider
+children or autonomous browser research. Temporary probe runtimes were removed.
+
+Reference checked for this setup: [Codex config reference](https://developers.openai.com/codex/config-reference)
+and [custom subagents](https://developers.openai.com/codex/subagents). Installed-build
+observations above take precedence over assuming every documented override works.
